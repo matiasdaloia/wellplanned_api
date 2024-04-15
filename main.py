@@ -10,6 +10,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
+from langchain_community.document_loaders import PyPDFLoader
+
 
 from dotenv import load_dotenv
 
@@ -18,7 +20,7 @@ load_dotenv()
 
 app = FastAPI()
 
-question = """
+get_recipe_breakdown_prompt = """
     Given the following recipe text, generate a detailed summary in JSON format. Make sure to include ALL ingredients and step-by-step preparation instructions. You must not omit any steps. The summary should be clear and easy to follow. Do not include any additional information that is not relevant to the preparation of the recipe.
 
     Example of format:
@@ -57,6 +59,31 @@ question = """
     }
 """
 
+get_mealplan_prompt = """
+    You will be provided with a patient diet plan from a nutritionist. Your task is to generate a 7-day meal plan for the patient following these guidelines:
+    - For each meal, only select one of the available options, not all of them.
+    - Include quantity of the ingredients for each meal if available.
+    - When there are multiple protein or main dish options, choose only one.
+    - Include ALL meals of the day: breakfast, mid-morning snack, lunch, afternoon snack, and dinner (5 meals per day, if available).
+    - The result must be in the language of the provided meal plan.
+    - Do not include any explanations, only provide a RFC8259 compliant JSON response following this format without deviation:
+
+    {
+        "results": [
+            {
+            "day": "{{ day of the week }}",
+            "meals": [
+                {
+                "mealType":
+                    "{{ breakfast | midMorningSnack | lunch | afternoonSnack | dinner }}",
+                "meal": "{{ detailed meal info with quantities and ingredients }}",
+                },
+            ],
+            },
+        ],
+    }
+"""
+
 prompt_template = """
     {context}
 
@@ -71,7 +98,7 @@ prompt = PromptTemplate.from_template(prompt_template)
 llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0125", streaming=False)
 
 
-def get_vectorstore_from_url(url):
+def get_recipe_vectorstore_from_url(url):
     # get the text in document form
     loader = WebBaseLoader(url)
     document = loader.load()
@@ -86,21 +113,59 @@ def get_vectorstore_from_url(url):
     return vector_store
 
 
+def get_mealplan_vectorstore_from_url(url: str):
+    loader = PyPDFLoader(url)
+    document = loader.load()
+
+    text_splitter = RecursiveCharacterTextSplitter()
+    document_chunks = text_splitter.split_documents(document)
+
+    vector_store = Chroma.from_documents(document_chunks, OpenAIEmbeddings())
+
+    return vector_store
+
+
 def get_recipe_breakdown(website_url: str):
-    retriever = get_vectorstore_from_url(website_url).as_retriever()
+    retriever = get_recipe_vectorstore_from_url(website_url).as_retriever()
     rag_chain = (
         {"context": retriever, "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
     )
-    response = rag_chain.invoke(question)
+    response = rag_chain.invoke(get_recipe_breakdown_prompt)
+
+    return response
+
+
+def generate_mealplan_from_pdf(pdf_url: str):
+    retriever = get_mealplan_vectorstore_from_url(pdf_url).as_retriever()
+    rag_chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    response = rag_chain.invoke(get_mealplan_prompt)
 
     return response
 
 
 @app.get("/recipes/breakdown")
 async def get_breakdown(q: Union[str, None] = None):
-    response = get_recipe_breakdown(q)
+    if q is None:
+        return {"message": "Please provide a URL"}
+    else:
+        response = get_recipe_breakdown(q)
+
+    return response
+
+
+@app.post("/mealplans/generate")
+async def generate_mealplan(q: Union[str, None] = None):
+    if q is None:
+        return {"message": "Please provide a URL"}
+    else:
+        response = generate_mealplan_from_pdf(q)
 
     return response
