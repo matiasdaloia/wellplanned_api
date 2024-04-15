@@ -65,7 +65,7 @@ get_mealplan_prompt = """
     - Include quantity of the ingredients for each meal if available.
     - When there are multiple protein or main dish options, choose only one.
     - Include ALL meals of the day: breakfast, mid-morning snack, lunch, afternoon snack, and dinner (5 meals per day, if available).
-    - The result must be in the language of the provided meal plan.
+    - The result must be in Spanish
     - Do not include any explanations, only provide a RFC8259 compliant JSON response following this format without deviation:
 
     {
