@@ -9,3 +9,4 @@ openai==1.17.1
 python-dotenv==1.0.1
 chroma-hnswlib==0.7.3
 chromadb==0.3.29
+beautifulsoup4==4.12.3
