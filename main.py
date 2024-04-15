@@ -13,6 +13,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_community.document_loaders import PyPDFLoader
 
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -64,7 +65,7 @@ get_mealplan_prompt = """
     - Include quantity of the ingredients for each meal if available.
     - When there are multiple protein or main dish options, choose only one.
     - Include ALL meals of the day: breakfast, mid-morning snack, lunch, afternoon snack, and dinner (5 meals per day, if available).
-    - The result must be in Spanish
+    - Result must not be translated, only provide the information in the same language as the input.
     - Do not include any explanations, only provide a RFC8259 compliant JSON response following this format without deviation:
 
     {
@@ -93,7 +94,7 @@ get_mealplan_ingredients_prompt = """
      Follow these guidelines:
      - In grocery list, include ingredients for other meals that are not included in the detailed list (breakfast, mid-morning snack, afternoon snack, etc.)
      - Do not include additional information or text.
-     - Result must be in English.
+     - Result must not be translated, only provide the information in the same language as the input.
      - Valid units are: COUNT, CLOVES, SLICES, STALKS, LEAVES, BUNCHES, KILOGRAMS, GRAMS, POUNDS, OUNCES, PINCHES, LITERS, CENTILITERS, MILLILITERS, CC, DROPS, GALLONS, QUARTS, PINTS, CUPS, FL_OZ, HEAPING_TBSP, TBSP, HEAPING_TSP, TSP
      - Units must be written as in the previous guideline, if the unit is in its minified form, write it in full (e.g. write MILLILITERS instead of ML)
      - Remove any double quotes that can affect JSON format, or just replace it with &apos;
@@ -160,27 +161,31 @@ def get_mealplan_vectorstore_from_url(url: str):
 
 
 def get_recipe_breakdown(website_url: str):
-    retriever = get_recipe_vectorstore_from_url(website_url).as_retriever()
+    vector_store = get_recipe_vectorstore_from_url(website_url)
     rag_chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
+        {"context": vector_store.as_retriever(), "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
     )
     response = rag_chain.invoke(get_recipe_breakdown_prompt)
 
+    vector_store.delete_collection()
+
     return response
 
 
 def generate_mealplan_from_pdf(pdf_url: str):
-    retriever = get_mealplan_vectorstore_from_url(pdf_url).as_retriever()
+    vector_store = get_mealplan_vectorstore_from_url(pdf_url)
     rag_chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
+        {"context": vector_store.as_retriever(), "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
     )
     response = rag_chain.invoke(get_mealplan_prompt)
+
+    vector_store.delete_collection()
 
     return response
 
@@ -197,22 +202,34 @@ def generate_mealplan_ingredients(meal_plan):
     return llm.invoke(messages)
 
 
+class GenerateMealPlanRequest(BaseModel):
+    pdf_url: str
+
+
+class GenerateMealPlanIngredientsRequest(BaseModel):
+    meal_plan: str
+
+
+class GenerateMealPlanRecommendationsRequest(BaseModel):
+    meal_plan: str
+
+
 @app.get("/recipes/breakdown")
-async def get_breakdown(q: Union[str, None] = None):
-    if q is None:
-        return {"message": "Please provide a URL"}
-    else:
-        response = get_recipe_breakdown(q)
+async def get_breakdown(recipe_url: Union[str, None] = None):
+    recipe_breakdown = get_recipe_breakdown(recipe_url)
 
-    return response
+    return recipe_breakdown
 
 
-@app.post("/mealplans/generate")
-async def generate_mealplan(q: Union[str, None] = None):
-    if q is None:
-        return {"message": "Please provide a URL"}
-    else:
-        meal_plan = generate_mealplan_from_pdf(q)
-        ingredients = generate_mealplan_ingredients(meal_plan)
+@app.post("/mealplans/generate/meals")
+async def generate_mealplan(request_body: GenerateMealPlanRequest):
+    meal_plan = generate_mealplan_from_pdf(request_body.pdf_url)
 
-    return {"meal_plan": meal_plan, "ingredients": ingredients.content}
+    return meal_plan
+
+
+@app.post("/mealplans/generate/ingredients")
+async def generate_mealplan(request_body: GenerateMealPlanIngredientsRequest):
+    ingredients = generate_mealplan_ingredients(request_body.meal_plan)
+
+    return ingredients
