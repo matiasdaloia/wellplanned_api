@@ -1,12 +1,14 @@
 from fastapi import FastAPI
 
+from typing import Union
+
 from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
 
 from dotenv import load_dotenv
@@ -16,7 +18,7 @@ load_dotenv()
 
 app = FastAPI()
 
-query = """
+question = """
     Given the following recipe text, generate a detailed summary in JSON format. Make sure to include ALL ingredients and step-by-step preparation instructions. You must not omit any steps. The summary should be clear and easy to follow. Do not include any additional information that is not relevant to the preparation of the recipe.
 
     Example of format:
@@ -55,6 +57,16 @@ query = """
     }
 """
 
+prompt_template = """
+    {context}
+
+    Question: {question}
+
+    Helpful Answer:
+"""
+
+prompt = PromptTemplate.from_template(prompt_template)
+
 
 llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0125", streaming=False)
 
@@ -74,55 +86,21 @@ def get_vectorstore_from_url(url):
     return vector_store
 
 
-def get_context_retriever_chain(vector_store):
-
-    retriever = vector_store.as_retriever()
-
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("user", "{input}"),
-            (
-                "user",
-                "Given the above conversation, generate a search query to look up in order to get information relevant to the conversation",
-            ),
-        ]
+def get_recipe_breakdown(website_url: str):
+    retriever = get_vectorstore_from_url(website_url).as_retriever()
+    rag_chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
     )
+    response = rag_chain.invoke(question)
 
-    retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
-
-    return retriever_chain
-
-
-def get_conversational_rag_chain(retriever_chain):
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "Answer the user's questions based on the below context:\n\n{context}",
-            ),
-            ("user", "{input}"),
-        ]
-    )
-
-    stuff_documents_chain = create_stuff_documents_chain(llm, prompt)
-
-    return create_retrieval_chain(retriever_chain, stuff_documents_chain)
+    return response
 
 
-def get_response(user_input: str, website_url: str):
-    retriever_chain = get_context_retriever_chain(get_vectorstore_from_url(website_url))
-    conversation_rag_chain = get_conversational_rag_chain(retriever_chain)
-
-    response = conversation_rag_chain.invoke({"input": user_input})
-
-    return response["answer"]
-
-
-@app.get("/playwright")
-async def read_item():
-    response = get_response(
-        query,
-        "https://ekilu.com/es/receta/pasta-integral-con-pollo-y-verduras",
-    )
+@app.get("/recipes/breakdown")
+async def get_breakdown(q: Union[str, None] = None):
+    response = get_recipe_breakdown(q)
 
     return response
