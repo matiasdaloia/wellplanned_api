@@ -2,15 +2,16 @@ from fastapi import FastAPI
 
 from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 
 from langchain_community.document_loaders import PyPDFLoader
 
-from langchain_pinecone import PineconeVectorStore
 from pydantic import BaseModel as PydanticBaseModel
+
+from langchain.chains.combine_documents import create_stuff_documents_chain
 
 from dotenv import load_dotenv
 
@@ -113,32 +114,24 @@ class GenerateMealPlanRecommendationsRequest(PydanticBaseModel):
     meal_plan: str
 
 
-def get_recipe_vectorstore_from_url(url):
+def get_recipe_breakdown_docs(url):
     loader = WebBaseLoader(url)
     document = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter()
     documents = text_splitter.split_documents(document)
 
-    vector_store = PineconeVectorStore.from_documents(
-        documents, embedding=OpenAIEmbeddings(), index_name="mealplans"
-    )
-
-    return vector_store
+    return documents
 
 
-def get_mealplan_vectorstore_from_url(url: str):
+def get_mealplan_docs(url: str):
     loader = PyPDFLoader(url)
     document = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter()
     documents = text_splitter.split_documents(document)
 
-    vector_store = PineconeVectorStore.from_documents(
-        documents, embedding=OpenAIEmbeddings(), index_name="mealplans"
-    )
-
-    return vector_store
+    return documents
 
 
 class RecipeBreakdown(LangchainPydanticBaseModel):
@@ -152,23 +145,26 @@ class RecipeBreakdown(LangchainPydanticBaseModel):
 
 
 def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
-    vector_store = get_recipe_vectorstore_from_url(request_body.recipe_url)
+    documents = get_recipe_breakdown_docs(request_body.recipe_url)
     parser = JsonOutputParser(pydantic_object=RecipeBreakdown)
     prompt = PromptTemplate.from_template(
         """
             Summarize the recipe with the following information:
             Answer must be written in: {language}
+
             format_instructions: {format_instructions}
 
             {context}
         """
     )
-
-    chain = prompt | llm | parser
-
+    chain = create_stuff_documents_chain(
+        llm,
+        prompt,
+        output_parser=parser,
+    )
     response = chain.invoke(
         {
-            "context": vector_store.as_retriever(),
+            "context": documents,
             "language": request_body.language,
             "format_instructions": parser.get_format_instructions(),
         }
@@ -180,6 +176,9 @@ def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
 class Meal(LangchainPydanticBaseModel):
     mealType: str = Field(description="The type of meal")
     meal: str = Field(description="The meal details")
+    ingredients: list[str] = Field(
+        description="The ingredients needed for the meal without quantities"
+    )
 
 
 class MealPlan(LangchainPydanticBaseModel):
@@ -188,7 +187,7 @@ class MealPlan(LangchainPydanticBaseModel):
 
 
 def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
-    vector_store = get_mealplan_vectorstore_from_url(request_body.pdf_url)
+    documents = get_mealplan_docs(request_body.pdf_url)
     parser = JsonOutputParser(pydantic_object=MealPlan)
     prompt = PromptTemplate.from_template(
         """
@@ -200,13 +199,16 @@ def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
         """
     )
 
-    chain = prompt | llm | parser
-
+    chain = create_stuff_documents_chain(
+        llm,
+        prompt,
+        output_parser=parser,
+    )
     response = chain.invoke(
         {
-            "context": vector_store.as_retriever(),
-            "instructions": get_mealplan_prompt,
+            "context": documents,
             "language": request_body.language,
+            "instructions": get_mealplan_prompt,
             "format_instructions": parser.get_format_instructions(),
         }
     )
