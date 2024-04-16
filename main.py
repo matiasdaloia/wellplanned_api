@@ -29,53 +29,6 @@ get_mealplan_prompt = """
     - Include ALL meals of the day: breakfast, mid-morning snack, lunch, afternoon snack, and dinner (5 meals per day, if available).
 """
 
-# get_mealplan_ingredients_prompt = """
-#      You will be provided with a patient diet plan from a nutritionist with the following JSON structure:
-
-#      Your task is to generate:
-#      1) A detailed list of ingredients for each lunch and dinner meals, in an array of strings.
-#      2) A grocery list of ingredients including all day meals, not only lunch and dinner. If an ingredient is repeated in different meals, you should sum the quantities needed for each meal.
-
-#      Follow these guidelines:
-#      - In grocery list, include ingredients for other meals that are not included in the detailed list (breakfast, mid-morning snack, afternoon snack, etc.)
-#      - Do not include additional information or text.
-#      - Result must not be translated, only provide the information in the same language as the input.
-#      - Valid units are: COUNT, CLOVES, SLICES, STALKS, LEAVES, BUNCHES, KILOGRAMS, GRAMS, POUNDS, OUNCES, PINCHES, LITERS, CENTILITERS, MILLILITERS, CC, DROPS, GALLONS, QUARTS, PINTS, CUPS, FL_OZ, HEAPING_TBSP, TBSP, HEAPING_TSP, TSP
-#      - Units must be written as in the previous guideline, if the unit is in its minified form, write it in full (e.g. write MILLILITERS instead of ML)
-#      - Remove any double quotes that can affect JSON format, or just replace it with &apos;
-#      - Do not include any explanations, only provide a RFC8259 compliant JSON response following this format without deviation:
-
-
-#      {
-#         ingredientsForRecipes: [
-#             {
-#             day: "{{ day of the week }}",
-#             dinner: [
-#                 "{{ ingredient name }} | {{ quantity needed for the meal without unit }} | {{ unit of measurement for the ingredient (should be only measured in KILOGRAMS or COUNT) }}",
-#             ],
-#             lunch: [
-#                 "{{ ingredient name }} | {{ quantity needed for the meal without unit }} | {{ unit of measurement for the ingredient (should be only measured in KILOGRAMS or COUNT) }}",
-#             ],
-#             },
-#         ],
-#         groceryList: [
-#             "{{ ingredient name }} | {{ quantity needed for the week without unit }} | {{ unit of measurement for the ingredient (should be only measured in KILOGRAMS or COUNT) }}",
-#         ],
-#      }
-# """
-
-prompt_template = """
-    {context}
-
-    Question: {question}
-
-    Answer must be written in: {language}
-
-    Helpful Answer:
-"""
-
-prompt = PromptTemplate.from_template(prompt_template)
-
 
 llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0125", streaming=False)
 
@@ -170,9 +123,13 @@ class MealPlan(LangchainPydanticBaseModel):
     meals: list[Meal] = Field(description="The meals for the day")
 
 
+class MealPlanResult(LangchainPydanticBaseModel):
+    results: list[MealPlan] = Field(description="The generated meal plan")
+
+
 def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
     documents = get_mealplan_docs(request_body.pdf_url)
-    parser = JsonOutputParser(pydantic_object=MealPlan)
+    parser = JsonOutputParser(pydantic_object=MealPlanResult)
     prompt = PromptTemplate.from_template(
         """
             Instructions: {instructions}
@@ -200,16 +157,16 @@ def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
     return response
 
 
-def generate_mealplan_ingredients(meal_plan):
-    messages = [
-        ("system", get_mealplan_ingredients_prompt),
-        (
-            "human",
-            meal_plan,
-        ),
-    ]
+# def generate_mealplan_ingredients(meal_plan):
+#     messages = [
+#         ("system", get_mealplan_ingredients_prompt),
+#         (
+#             "human",
+#             meal_plan,
+#         ),
+#     ]
 
-    return llm.invoke(messages)
+#     return llm.invoke(messages)
 
 
 @app.post("/recipes/breakdown")
@@ -226,8 +183,8 @@ async def generate_mealplan(request_body: GenerateMealPlanRequest):
     return meal_plan
 
 
-@app.post("/mealplans/generate/ingredients")
-async def generate_mealplan(request_body: GenerateMealPlanIngredientsRequest):
-    ingredients = generate_mealplan_ingredients(request_body.meal_plan)
+# @app.post("/mealplans/generate/ingredients")
+# async def generate_mealplan(request_body: GenerateMealPlanIngredientsRequest):
+#     ingredients = generate_mealplan_ingredients(request_body.meal_plan)
 
-    return ingredients
+#     return ingredients
