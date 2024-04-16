@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_community.callbacks import get_openai_callback
 
 from langchain_community.document_loaders import PyPDFLoader
 
@@ -99,13 +100,15 @@ def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
         prompt,
         output_parser=parser,
     )
-    response = chain.invoke(
-        {
-            "context": documents,
-            "language": request_body.language,
-            "format_instructions": parser.get_format_instructions(),
-        }
-    )
+    with get_openai_callback() as cb:
+        response = chain.invoke(
+            {
+                "context": documents,
+                "language": request_body.language,
+                "format_instructions": parser.get_format_instructions(),
+            }
+        )
+        print(cb)
 
     return response
 
@@ -145,14 +148,17 @@ def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
         prompt,
         output_parser=parser,
     )
-    response = chain.invoke(
-        {
-            "context": documents,
-            "language": request_body.language,
-            "instructions": get_mealplan_prompt,
-            "format_instructions": parser.get_format_instructions(),
-        }
-    )
+
+    with get_openai_callback() as cb:
+        response = chain.invoke(
+            {
+                "context": documents,
+                "language": request_body.language,
+                "instructions": get_mealplan_prompt,
+                "format_instructions": parser.get_format_instructions(),
+            }
+        )
+        print(cb)
 
     return response
 
