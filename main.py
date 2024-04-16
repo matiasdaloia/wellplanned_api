@@ -1,3 +1,5 @@
+import json
+import os
 from fastapi import FastAPI
 
 from langchain_community.document_loaders import WebBaseLoader
@@ -7,6 +9,11 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.callbacks import get_openai_callback
+from langchain_community.document_loaders import AsyncChromiumLoader
+from langchain_community.document_transformers import BeautifulSoupTransformer
+from serpapi import GoogleSearch
+
+from datetime import datetime
 
 from langchain_community.document_loaders import PyPDFLoader
 
@@ -27,11 +34,43 @@ get_mealplan_prompt = """
     - For each meal, only select one of the available options, not all of them.
     - Include quantity of the ingredients for each meal if available.
     - When there are multiple protein or main dish options, choose only one.
-    - Include ALL meals of the day: breakfast, mid-morning snack, lunch, afternoon snack, and dinner (5 meals per day, if available).
+    - Include ALL meals of the day
 """
 
 
 llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0125", streaming=False)
+
+
+class Meal(LangchainPydanticBaseModel):
+    slot: int = Field(
+        description="The type of meal in slots, 0 for breakfast, 1 for mid morning snack, 2 for lunch, 3 for afternoon snack, 4 for dinner"
+    )
+    meal: str = Field(description="The meal details")
+    ingredients: list[str] = Field(
+        description="The ingredients needed for the meal without quantities"
+    )
+
+
+class MealPlan(LangchainPydanticBaseModel):
+    weekday: int = Field(
+        description="The day of the week in weekday format (e.g. 0 for Monday, 1 for Tuesday, etc.)"
+    )
+    meals: list[Meal] = Field(description="The meals for the day")
+
+
+class MealPlanResult(LangchainPydanticBaseModel):
+    results: list[MealPlan] = Field(description="The generated meal plan")
+
+
+class RecipeBreakdown(LangchainPydanticBaseModel):
+    thumbnail: str = Field(description="The thumbnail image of the recipe")
+    title: str = Field(description="The title of the recipe")
+    author: str = Field(description="The author of the recipe")
+    difficulty: str = Field(description="The difficulty level of the recipe")
+    time: str = Field(description="The time it takes to prepare the recipe")
+    servings: str = Field(description="The number of servings the recipe makes")
+    ingredients: list[str] = Field(description="The ingredients needed for the recipe")
+    steps: list[str] = Field(description="The steps to prepare the recipe")
 
 
 class GenerateMealPlanRequest(PydanticBaseModel):
@@ -39,21 +78,29 @@ class GenerateMealPlanRequest(PydanticBaseModel):
     language: str
 
 
+class MealRequest(PydanticBaseModel):
+    slot: int
+    meal: str
+    ingredients: list[str]
+
+
+class MealPlanRequest(PydanticBaseModel):
+    weekday: int
+    meals: list[MealRequest]
+
+
+class GenerateMealPlanRecommendationsRequest(PydanticBaseModel):
+    meal_plan: list[MealPlanRequest]
+
+
 class GenerateRecipeBreakdownRequest(PydanticBaseModel):
     recipe_url: str
     language: str
 
 
-class GenerateMealPlanIngredientsRequest(PydanticBaseModel):
-    meal_plan: str
-
-
-class GenerateMealPlanRecommendationsRequest(PydanticBaseModel):
-    meal_plan: str
-
-
 def get_recipe_breakdown_docs(url):
-    loader = WebBaseLoader(url)
+    # loader = WebBaseLoader(url)
+    loader = AsyncChromiumLoader(url)
     document = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter()
@@ -70,16 +117,6 @@ def get_mealplan_docs(url: str):
     documents = text_splitter.split_documents(document)
 
     return documents
-
-
-class RecipeBreakdown(LangchainPydanticBaseModel):
-    title: str = Field(description="The title of the recipe")
-    author: str = Field(description="The author of the recipe")
-    difficulty: str = Field(description="The difficulty level of the recipe")
-    time: str = Field(description="The time it takes to prepare the recipe")
-    servings: str = Field(description="The number of servings the recipe makes")
-    ingredients: list[str] = Field(description="The ingredients needed for the recipe")
-    steps: list[str] = Field(description="The steps to prepare the recipe")
 
 
 def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
@@ -111,23 +148,6 @@ def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
         print(cb)
 
     return response
-
-
-class Meal(LangchainPydanticBaseModel):
-    mealType: str = Field(description="The type of meal")
-    meal: str = Field(description="The meal details")
-    ingredients: list[str] = Field(
-        description="The ingredients needed for the meal without quantities"
-    )
-
-
-class MealPlan(LangchainPydanticBaseModel):
-    day: str = Field(description="The day of the week")
-    meals: list[Meal] = Field(description="The meals for the day")
-
-
-class MealPlanResult(LangchainPydanticBaseModel):
-    results: list[MealPlan] = Field(description="The generated meal plan")
 
 
 def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
@@ -163,16 +183,60 @@ def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
     return response
 
 
-# def generate_mealplan_ingredients(meal_plan):
-#     messages = [
-#         ("system", get_mealplan_ingredients_prompt),
-#         (
-#             "human",
-#             meal_plan,
-#         ),
-#     ]
+def generate_mealplan_recommendations(
+    request_body: GenerateMealPlanRecommendationsRequest,
+):
+    now = datetime.now()
+    current_weekday = now.weekday()
 
-#     return llm.invoke(messages)
+    current_day_mealplan_list = [
+        {
+            "weekday": mealplan.weekday,
+            "meals": [
+                {"slot": meal.slot, "meal": meal.meal, "ingredients": meal.ingredients}
+                for meal in mealplan.meals
+            ],
+        }
+        for mealplan in filter(
+            lambda meal: meal.weekday == current_weekday, request_body.meal_plan
+        )
+    ]
+
+    for mealplan in current_day_mealplan_list:
+        for meal in mealplan["meals"]:
+            comma_separated_ingredients = ", ".join(meal["ingredients"])
+            params = {
+                "q": f"Recipes with {comma_separated_ingredients}",
+                "location": "Austin, Texas, United States",
+                "hl": "en",
+                "gl": "us",
+                "google_domain": "google.com",
+                "api_key": os.environ.get("SERPAPI_API_KEY"),
+            }
+            search = GoogleSearch(params)
+            results = search.get_dict()
+
+            print(results)
+
+            recommendations = []
+
+            if "organic_results" in results:
+                organic_results_with_thumbnails = list(
+                    filter(
+                        lambda result: "thumbnail" in result,
+                        results["organic_results"],
+                    )
+                )
+                for result in organic_results_with_thumbnails[:3]:
+                    recommendations.append(
+                        {
+                            "title": result["title"],
+                            "link": result["link"],
+                            "thumbnail": result["thumbnail"],
+                        }
+                    )
+
+            return recommendations
 
 
 @app.post("/recipes/breakdown")
@@ -182,15 +246,15 @@ async def get_breakdown(request_body: GenerateRecipeBreakdownRequest):
     return recipe_breakdown
 
 
-@app.post("/mealplans/generate/meals")
+@app.post("/mealplans/generate/overview")
 async def generate_mealplan(request_body: GenerateMealPlanRequest):
     meal_plan = generate_mealplan_from_pdf(request_body)
 
     return meal_plan
 
 
-# @app.post("/mealplans/generate/ingredients")
-# async def generate_mealplan(request_body: GenerateMealPlanIngredientsRequest):
-#     ingredients = generate_mealplan_ingredients(request_body.meal_plan)
+@app.post("/mealplans/generate/recommendations")
+async def generate_mealplan(request_body: GenerateMealPlanRecommendationsRequest):
+    meal_plan = generate_mealplan_recommendations(request_body)
 
-#     return ingredients
+    return meal_plan
