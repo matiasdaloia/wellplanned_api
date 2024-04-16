@@ -2,15 +2,14 @@ from fastapi import FastAPI
 
 from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 
 from langchain_community.document_loaders import PyPDFLoader
 
+from langchain_pinecone import PineconeVectorStore
 from pydantic import BaseModel as PydanticBaseModel
 
 from dotenv import load_dotenv
@@ -121,8 +120,8 @@ def get_recipe_vectorstore_from_url(url):
     text_splitter = RecursiveCharacterTextSplitter()
     documents = text_splitter.split_documents(document)
 
-    vector_store = Chroma.from_documents(
-        documents=documents, embedding=OpenAIEmbeddings()
+    vector_store = PineconeVectorStore.from_documents(
+        documents, embedding=OpenAIEmbeddings(), index_name="mealplans"
     )
 
     return vector_store
@@ -133,9 +132,11 @@ def get_mealplan_vectorstore_from_url(url: str):
     document = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter()
-    document_chunks = text_splitter.split_documents(document)
+    documents = text_splitter.split_documents(document)
 
-    vector_store = Chroma.from_documents(document_chunks, OpenAIEmbeddings())
+    vector_store = PineconeVectorStore.from_documents(
+        documents, embedding=OpenAIEmbeddings(), index_name="mealplans"
+    )
 
     return vector_store
 
@@ -173,8 +174,6 @@ def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
         }
     )
 
-    vector_store.delete_collection()
-
     return response
 
 
@@ -211,8 +210,6 @@ def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
             "format_instructions": parser.get_format_instructions(),
         }
     )
-
-    vector_store.delete_collection()
 
     return response
 
