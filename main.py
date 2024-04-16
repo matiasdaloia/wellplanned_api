@@ -7,7 +7,6 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
 from langchain_community.document_loaders import PyPDFLoader
@@ -65,20 +64,19 @@ get_mealplan_prompt = """
     - Include quantity of the ingredients for each meal if available.
     - When there are multiple protein or main dish options, choose only one.
     - Include ALL meals of the day: breakfast, mid-morning snack, lunch, afternoon snack, and dinner (5 meals per day, if available).
-    - Result must not be translated, only provide the information in the same language as the input.
     - Do not include any explanations, only provide a RFC8259 compliant JSON response following this format without deviation:
 
     {
         "results": [
             {
-            "day": "{{ day of the week }}",
-            "meals": [
-                {
-                "mealType":
-                    "{{ breakfast | midMorningSnack | lunch | afternoonSnack | dinner }}",
-                "meal": "{{ detailed meal info with quantities and ingredients }}",
-                },
-            ],
+                "day": "{{ day of the week }}",
+                "meals": [
+                    {
+                    "mealType":
+                        "{{ breakfast | midMorningSnack | lunch | afternoonSnack | dinner }}",
+                    "meal": "{{ detailed meal info with quantities and ingredients }}",
+                    },
+                ],
             },
         ],
     }
@@ -124,6 +122,8 @@ prompt_template = """
 
     Question: {question}
 
+    Answer must be written in: {language}
+
     Helpful Answer:
 """
 
@@ -131,6 +131,24 @@ prompt = PromptTemplate.from_template(prompt_template)
 
 
 llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0125", streaming=False)
+
+
+class GenerateMealPlanRequest(BaseModel):
+    pdf_url: str
+    language: str
+
+
+class GenerateRecipeBreakdownRequest(BaseModel):
+    recipe_url: str
+    language: str
+
+
+class GenerateMealPlanIngredientsRequest(BaseModel):
+    meal_plan: str
+
+
+class GenerateMealPlanRecommendationsRequest(BaseModel):
+    meal_plan: str
 
 
 def get_recipe_vectorstore_from_url(url):
@@ -160,30 +178,54 @@ def get_mealplan_vectorstore_from_url(url: str):
     return vector_store
 
 
-def get_recipe_breakdown(website_url: str):
-    vector_store = get_recipe_vectorstore_from_url(website_url)
-    rag_chain = (
-        {"context": vector_store.as_retriever(), "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
+def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
+    vector_store = get_recipe_vectorstore_from_url(request_body.recipe_url)
+    prompt_template = PromptTemplate.from_template(
+        """
+            {context}
+
+            Question: {question}
+
+            Answer must be written in: {language}
+
+            Do not translate JSON keys
+        """
     )
-    response = rag_chain.invoke(get_recipe_breakdown_prompt)
+    rag_chain = prompt_template | llm | StrOutputParser()
+    response = rag_chain.invoke(
+        {
+            "context": vector_store.as_retriever(),
+            "question": get_recipe_breakdown_prompt,
+            "language": request_body.language,
+        }
+    )
 
     vector_store.delete_collection()
 
     return response
 
 
-def generate_mealplan_from_pdf(pdf_url: str):
-    vector_store = get_mealplan_vectorstore_from_url(pdf_url)
-    rag_chain = (
-        {"context": vector_store.as_retriever(), "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
+def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
+    vector_store = get_mealplan_vectorstore_from_url(request_body.pdf_url)
+    prompt_template = PromptTemplate.from_template(
+        """
+            {context}
+
+            Question: {question}
+
+            Answer must be written in: {language}
+
+            Do not translate JSON keys
+        """
     )
-    response = rag_chain.invoke(get_mealplan_prompt)
+    rag_chain = prompt_template | llm | StrOutputParser()
+    response = rag_chain.invoke(
+        {
+            "context": vector_store.as_retriever(),
+            "question": get_mealplan_prompt,
+            "language": request_body.language,
+        }
+    )
 
     vector_store.delete_collection()
 
@@ -202,28 +244,16 @@ def generate_mealplan_ingredients(meal_plan):
     return llm.invoke(messages)
 
 
-class GenerateMealPlanRequest(BaseModel):
-    pdf_url: str
-
-
-class GenerateMealPlanIngredientsRequest(BaseModel):
-    meal_plan: str
-
-
-class GenerateMealPlanRecommendationsRequest(BaseModel):
-    meal_plan: str
-
-
-@app.get("/recipes/breakdown")
-async def get_breakdown(recipe_url: Union[str, None] = None):
-    recipe_breakdown = get_recipe_breakdown(recipe_url)
+@app.post("/recipes/breakdown")
+async def get_breakdown(request_body: GenerateRecipeBreakdownRequest):
+    recipe_breakdown = get_recipe_breakdown(request_body)
 
     return recipe_breakdown
 
 
 @app.post("/mealplans/generate/meals")
 async def generate_mealplan(request_body: GenerateMealPlanRequest):
-    meal_plan = generate_mealplan_from_pdf(request_body.pdf_url)
+    meal_plan = generate_mealplan_from_pdf(request_body)
 
     return meal_plan
 
