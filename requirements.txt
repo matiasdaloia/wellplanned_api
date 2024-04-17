@@ -141,3 +141,4 @@ proto-plus==1.23.0
 pyparsing==3.1.2
 uritemplate==4.1.1
 html2text==2024.2.26
+langchain-google-community==1.0.2

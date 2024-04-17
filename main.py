@@ -1,8 +1,5 @@
-import json
-import os
 from fastapi import FastAPI
 
-from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -10,8 +7,8 @@ from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel, 
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.callbacks import get_openai_callback
 from langchain_community.document_loaders import AsyncChromiumLoader
-from langchain_community.document_transformers import BeautifulSoupTransformer
-from serpapi import GoogleSearch
+
+from langchain_community.utilities import GoogleSerperAPIWrapper
 
 from datetime import datetime
 
@@ -189,6 +186,9 @@ def generate_mealplan_recommendations(
     now = datetime.now()
     current_weekday = now.weekday()
 
+    # Search
+    google_search = GoogleSerperAPIWrapper()
+
     current_day_mealplan_list = [
         {
             "weekday": mealplan.weekday,
@@ -202,41 +202,26 @@ def generate_mealplan_recommendations(
         )
     ]
 
+    google_search = GoogleSerperAPIWrapper(type="images")
+
+    recommendations = []
+
     for mealplan in current_day_mealplan_list:
         for meal in mealplan["meals"]:
-            comma_separated_ingredients = ", ".join(meal["ingredients"])
-            params = {
-                "q": f"Recipes with {comma_separated_ingredients}",
-                "location": "Austin, Texas, United States",
-                "hl": "en",
-                "gl": "us",
-                "google_domain": "google.com",
-                "api_key": os.environ.get("SERPAPI_API_KEY"),
-            }
-            search = GoogleSearch(params)
-            results = search.get_dict()
+            search_result = google_search.results(f"{meal['meal']} recipe")
+            top_3_results = search_result["images"][:3]
 
-            print(results)
+            for result in top_3_results:
+                recommendation = {
+                    "recipe": result["title"],
+                    "recipe_link": result["link"],
+                    "recipe_thumbnail": result["imageUrl"],
+                    "weekday": mealplan["weekday"],
+                    "slot": meal["slot"],
+                }
+                recommendations.append(recommendation)
 
-            recommendations = []
-
-            if "organic_results" in results:
-                organic_results_with_thumbnails = list(
-                    filter(
-                        lambda result: "thumbnail" in result,
-                        results["organic_results"],
-                    )
-                )
-                for result in organic_results_with_thumbnails[:3]:
-                    recommendations.append(
-                        {
-                            "title": result["title"],
-                            "link": result["link"],
-                            "thumbnail": result["thumbnail"],
-                        }
-                    )
-
-            return recommendations
+    return recommendations
 
 
 @app.post("/recipes/breakdown")
