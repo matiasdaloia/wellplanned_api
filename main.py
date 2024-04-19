@@ -7,6 +7,8 @@ from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel, 
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.callbacks import get_openai_callback
 from langchain_community.document_loaders import AsyncChromiumLoader
+from langchain_community.document_loaders import WebBaseLoader
+
 
 from langchain_community.utilities import GoogleSerperAPIWrapper
 
@@ -96,8 +98,8 @@ class GenerateRecipeBreakdownRequest(PydanticBaseModel):
 
 
 def get_recipe_breakdown_docs(url):
-    # loader = WebBaseLoader(url)
-    loader = AsyncChromiumLoader(url)
+    loader = WebBaseLoader(url)
+    # loader = AsyncChromiumLoader(url)
     document = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter()
@@ -213,7 +215,7 @@ def generate_mealplan_recommendations(
 
             for result in top_3_results:
                 recommendation = {
-                    "recipe": result["title"],
+                    "recipe_title": result["title"],
                     "recipe_link": result["link"],
                     "recipe_thumbnail": result["imageUrl"],
                     "weekday": mealplan["weekday"],
