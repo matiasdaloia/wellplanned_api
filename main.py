@@ -6,7 +6,6 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.callbacks import get_openai_callback
-from langchain_community.document_loaders import AsyncChromiumLoader
 from langchain_community.document_loaders import WebBaseLoader
 
 
@@ -21,6 +20,8 @@ from pydantic import BaseModel as PydanticBaseModel
 from langchain.chains.combine_documents import create_stuff_documents_chain
 
 from dotenv import load_dotenv
+
+from src.utils.execution_timer import ExecutionTimer
 
 load_dotenv()
 
@@ -108,6 +109,7 @@ def get_recipe_breakdown_docs(url):
     return documents
 
 
+@ExecutionTimer.time_this
 def get_mealplan_docs(url: str):
     loader = PyPDFLoader(url)
     document = loader.load()
@@ -149,6 +151,7 @@ def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
     return response
 
 
+@ExecutionTimer.time_this
 def generate_mealplan_from_pdf(request_body: GenerateMealPlanRequest):
     documents = get_mealplan_docs(request_body.pdf_url)
     parser = JsonOutputParser(pydantic_object=MealPlanResult)
