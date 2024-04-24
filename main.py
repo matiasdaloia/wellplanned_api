@@ -46,9 +46,11 @@ class Meal(LangchainPydanticBaseModel):
     slot: int = Field(
         description="The type of meal in slots, 0 for breakfast, 1 for mid morning snack, 2 for lunch, 3 for afternoon snack, 4 for dinner"
     )
-    meal: str = Field(description="The meal details")
-    ingredients: list[str] = Field(
-        description="The ingredients needed for the meal without quantities"
+    meal: str = Field(
+        description="The meal details including quantities and ingredients"
+    )
+    recipeQuery: str = Field(
+        description="A google friendly query to search for related recipes for the meal"
     )
 
 
