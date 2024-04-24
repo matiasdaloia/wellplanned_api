@@ -35,6 +35,7 @@ get_mealplan_prompt = """
     - Include quantity of the ingredients for each meal if available.
     - When there are multiple protein or main dish options, choose only one.
     - Include ALL meals of the day
+    - Include ALL days of the week
 """
 
 
