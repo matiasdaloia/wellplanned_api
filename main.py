@@ -381,9 +381,7 @@ async def generate_mealplan(
     return meal_plan
 
 
-async def stream_mealplan(
-    file_content: bytes, language: str, preferences: Optional[DietaryPreferences] = None
-):
+async def stream_mealplan(file_content: bytes):
     try:
         base64_images = pdf_to_base64_images(file_content)
         llm = ChatOpenAI(
@@ -472,8 +470,6 @@ async def save_generated_meal_plan(
 
 @app.post("/mealplans/generate/overview")
 async def generate_mealplan(
-    language: str = Form("en"),
-    preferences: Optional[str] = Form(None),
     user=Depends(get_current_user),
 ):
     try:
@@ -500,7 +496,7 @@ async def generate_mealplan(
         async def generate_and_save():
             full_response = None
             async for chunk in stream_mealplan(
-                file_content=file_content, language=language, preferences=preferences
+                file_content=file_content,
             ):
                 # Parse the chunk to get the meal plan data
                 chunk_data = json.loads(chunk.replace("data: ", ""))
@@ -521,6 +517,7 @@ async def generate_mealplan(
         )
 
     except Exception as e:
+        print(f"Error generating meal plan: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error generating meal plan: {str(e)}"
         )
