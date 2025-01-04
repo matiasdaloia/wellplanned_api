@@ -1,9 +1,11 @@
+import json
 import os
 from datetime import datetime
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.callbacks import get_openai_callback
@@ -270,13 +272,68 @@ async def generate_mealplan(request_body: GenerateMealPlanRequest):
     return meal_plan
 
 
+async def stream_mealplan(
+    file_content: bytes, language: str, preferences: Optional[DietaryPreferences] = None
+):
+    try:
+        base64_images = pdf_to_base64_images(file_content)
+        llm = ChatOpenAI(
+            temperature=0,
+            model="gpt-4o",
+            stream_usage=True,
+        )
+        structured_llm = llm.with_structured_output(MealPlanResult)
+
+        messages = [
+            SystemMessage(
+                content="""
+            You will be provided with a patient diet plan from a nutritionist. Your task is to extract a 7-day meal plan for the patient following these guidelines:
+                - For each meal, only select one of the available options, not all of them.
+                - Include quantity of the ingredients for each meal if available.
+                - When there are multiple protein or main dish options, choose only one.
+                - Include ALL meals of the day
+                - Include ALL days of the week
+                - If it says "free choice", choose any meal of the same type (e.g. breakfast, lunch, etc.)
+            """
+            )
+        ]
+
+        for base64_image in base64_images:
+            messages.append(
+                HumanMessage(
+                    content=[
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            },
+                        }
+                    ]
+                )
+            )
+
+        full_response = None
+        async for chunk in structured_llm.astream(messages):
+            if full_response is None:
+                full_response = chunk
+            else:
+                full_response = chunk
+
+            yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
+
+        # Send the final complete response
+        yield f"data: {json.dumps({'type': 'complete', 'content': full_response})}\n\n"
+
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+
 @app.post("/mealplans/generate/overview")
 async def generate_mealplan(
     file: UploadFile = File(...),
     language: str = Form("en"),
     preferences: Optional[str] = Form(None),
 ):
-
     if not file.content_type == "application/pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
@@ -285,6 +342,9 @@ async def generate_mealplan(
     if len(file_content) > 32 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File size exceeds 32MB limit")
 
-    return await generate_mealplan_from_pdf(
-        file_content=file_content, language=language, preferences=preferences
+    return StreamingResponse(
+        stream_mealplan(
+            file_content=file_content, language=language, preferences=preferences
+        ),
+        media_type="text/event-stream",
     )
