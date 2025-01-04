@@ -332,6 +332,38 @@ def generate_mealplan_recommendations(
     return recommendations
 
 
+async def stream_recommendations(latest_meal_plan: Dict[str, Any]):
+    try:
+        google_search = GoogleSerperAPIWrapper(type="images")
+        recommendations = []
+
+        for meal in latest_meal_plan["meals"]:
+            # Use the existing recipeQuery for searching recipes
+            search_result = google_search.results(meal["recipeQuery"])
+            top_3_results = search_result["images"][:3]
+
+            meal_recommendations = []
+            for result in top_3_results:
+                recommendation = {
+                    "recipe_title": result["title"],
+                    "recipe_link": result["link"],
+                    "recipe_thumbnail": result["imageUrl"],
+                    "weekday": meal["weekday"],
+                    "slot": meal["slot"],
+                }
+                meal_recommendations.append(recommendation)
+                recommendations.append(recommendation)
+
+            # Stream each meal's recommendations as they are generated
+            yield f"data: {json.dumps({'type': 'update', 'content': meal_recommendations})}\n\n"
+
+        # Send the final complete response with all recommendations
+        yield f"data: {json.dumps({'type': 'complete', 'content': recommendations})}\n\n"
+
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+
 # Auth endpoints
 @app.post("/auth/signup")
 async def signup(request: SignUpRequest):
@@ -455,32 +487,32 @@ async def generate_mealplan_recommendations_endpoint(
 
         latest_meal_plan = meal_plans[0]  # Assuming the latest is the last in the list
 
-        google_search = GoogleSerperAPIWrapper(type="images")
-        recommendations = []
+        # Create an async generator that will both stream the response and save the recommendations
+        async def generate_and_save():
+            full_recommendations = None
+            async for chunk in stream_recommendations(latest_meal_plan):
+                # Parse the chunk to get the recommendations data
+                chunk_data = json.loads(chunk.replace("data: ", ""))
 
-        for meal in latest_meal_plan["meals"]:
-            # Use the existing recipeQuery for searching recipes
-            search_result = google_search.results(meal["recipeQuery"])
-            top_3_results = search_result["images"][:3]
+                # If this is the complete response, save the recommendations
+                if chunk_data["type"] == "complete":
+                    full_recommendations = chunk_data["content"]
+                    # Save the recommendations in the background
+                    asyncio.create_task(
+                        supabase.save_recommendations(
+                            user["id"], latest_meal_plan["id"], full_recommendations
+                        )
+                    )
 
-            for result in top_3_results:
-                recommendation = {
-                    "recipe_title": result["title"],
-                    "recipe_link": result["link"],
-                    "recipe_thumbnail": result["imageUrl"],
-                    "weekday": meal["weekday"],
-                    "slot": meal["slot"],
-                }
-                recommendations.append(recommendation)
+                yield chunk
 
-        # Save recommendations to the database
-        supabase.save_recommendations(
-            user["id"], latest_meal_plan["id"], recommendations
+        return StreamingResponse(
+            generate_and_save(),
+            media_type="text/event-stream",
         )
 
-        return {"success": True, "recommendations": recommendations}
-
     except Exception as e:
+        print(f"Error generating meal plan recommendations: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error generating recommendations: {str(e)}"
         )
@@ -789,3 +821,16 @@ async def get_latest_mealplan_pdf(user=Depends(get_current_user)):
         raise HTTPException(
             status_code=500, detail=f"Error retrieving latest PDF: {str(e)}"
         )
+
+
+@app.get("/mealplans/{meal_plan_id}/recommendations")
+async def get_meal_plan_recommendations(
+    meal_plan_id: str, user=Depends(get_current_user)
+):
+    """Get recommendations for a specific meal plan"""
+    recommendations = await supabase.get_recommendations(meal_plan_id)
+    if not recommendations:
+        raise HTTPException(
+            status_code=404, detail="No recommendations found for this meal plan"
+        )
+    return recommendations

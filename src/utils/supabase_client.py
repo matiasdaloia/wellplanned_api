@@ -266,6 +266,23 @@ class SupabaseClient:
         )
         return response.data
 
+    async def get_recommendations(self, meal_plan_id: str) -> List[Dict[str, Any]]:
+        """
+        Get recommendations for a specific meal plan
+        Args:
+            meal_plan_id: The ID of the meal plan
+        Returns:
+            List of recommendations for the meal plan
+        """
+        response = (
+            self.client.table("recommendations")
+            .select("*")
+            .eq("meal_plan_id", meal_plan_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return response.data
+
 
 # Create a singleton instance
 supabase = SupabaseClient()
