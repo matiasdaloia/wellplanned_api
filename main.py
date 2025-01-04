@@ -45,7 +45,7 @@ class Meal(TypedDict):
     recipeQuery: Annotated[
         str,
         ...,
-        "A Spoonacular API friendly query to search for related recipes for the meal",
+        "A Google friendly query to search for related recipes for the meal",
     ]
 
 
@@ -166,7 +166,8 @@ async def generate_mealplan_from_pdf(
         base64_images = pdf_to_base64_images(file_content)
         llm = ChatOpenAI(
             temperature=0,
-            model="gpt-4o-mini",
+            model="gpt-4o",
+            stream_usage=True,
         )
         structured_llm = llm.with_structured_output(MealPlanResult)
 
@@ -179,6 +180,7 @@ async def generate_mealplan_from_pdf(
                 - When there are multiple protein or main dish options, choose only one.
                 - Include ALL meals of the day
                 - Include ALL days of the week
+                - If it says "free choice", choose any meal of the same type (e.g. breakfast, lunch, etc.)
             """
             )
         ]
@@ -197,9 +199,13 @@ async def generate_mealplan_from_pdf(
                 )
             )
 
-        result = structured_llm.ainvoke(messages)
-        print(result)
-        return result
+        full = None
+
+        async for chunk in structured_llm.astream(messages):
+            print(chunk, flush=True)
+            full = chunk
+
+        return full
 
     except Exception as e:
         print(e)
