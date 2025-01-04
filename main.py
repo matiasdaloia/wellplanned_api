@@ -91,7 +91,7 @@ class Meal(TypedDict):
     recipeQuery: Annotated[
         str,
         ...,
-        "A Google friendly query to search for related recipes for the meal",
+        "A simplified recipe search query. For example, if meal is '120g pasta, 200g chicken breast, vegetables', the query should be 'healthy pasta chicken vegetables recipe'",
     ]
 
 
@@ -253,6 +253,10 @@ async def generate_mealplan_from_pdf(
                 - Include ALL meals of the day
                 - Include ALL days of the week
                 - If it says "free choice", choose any meal of the same type (e.g. breakfast, lunch, etc.)
+                - For the recipeQuery field, create a simplified search query. For example:
+                  * If meal is "120g pasta, 200g chicken breast, vegetables" → recipeQuery should be "healthy pasta chicken vegetables recipe"
+                  * If meal is "2 eggs, 30g cheese, bread" → recipeQuery should be "healthy eggs cheese toast recipe"
+                  * Remove quantities and keep only main ingredients for better search results
             """
             )
         ]
@@ -438,11 +442,48 @@ async def get_breakdown(
 
 
 @app.post("/mealplans/generate/recommendations")
-async def generate_mealplan(
-    request_body: GenerateMealPlanRequest, user=Depends(get_current_user)
+async def generate_mealplan_recommendations_endpoint(
+    user=Depends(get_current_user),
 ):
-    meal_plan = generate_mealplan_recommendations(request_body)
-    return meal_plan
+    try:
+        # Fetch the latest meal plan for the user
+        meal_plans = supabase.list_meal_plans(user["id"])
+        if not meal_plans:
+            raise HTTPException(
+                status_code=404, detail="No meal plans found for the user."
+            )
+
+        latest_meal_plan = meal_plans[0]  # Assuming the latest is the last in the list
+
+        google_search = GoogleSerperAPIWrapper(type="images")
+        recommendations = []
+
+        for meal in latest_meal_plan["meals"]:
+            # Use the existing recipeQuery for searching recipes
+            search_result = google_search.results(meal["recipeQuery"])
+            top_3_results = search_result["images"][:3]
+
+            for result in top_3_results:
+                recommendation = {
+                    "recipe_title": result["title"],
+                    "recipe_link": result["link"],
+                    "recipe_thumbnail": result["imageUrl"],
+                    "weekday": meal["weekday"],
+                    "slot": meal["slot"],
+                }
+                recommendations.append(recommendation)
+
+        # Save recommendations to the database
+        supabase.save_recommendations(
+            user["id"], latest_meal_plan["id"], recommendations
+        )
+
+        return {"success": True, "recommendations": recommendations}
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error generating recommendations: {str(e)}"
+        )
 
 
 async def stream_mealplan(file_content: bytes):
@@ -465,6 +506,10 @@ async def stream_mealplan(file_content: bytes):
                 - Include ALL meals of the day
                 - Include ALL days of the week
                 - If it says "free choice", choose any meal of the same type (e.g. breakfast, lunch, etc.)
+                - For the recipeQuery field, create a simplified search query. For example:
+                  * If meal is "120g pasta, 200g chicken breast, vegetables" → recipeQuery should be "healthy pasta chicken vegetables recipe"
+                  * If meal is "2 eggs, 30g cheese, bread" → recipeQuery should be "healthy eggs cheese toast recipe"
+                  * Remove quantities and keep only main ingredients for better search results
             """
             )
         ]
@@ -505,25 +550,10 @@ async def save_generated_meal_plan(
     """Save the generated meal plan to the database"""
     try:
         # Create meal plan
-        meal_plan_request = {"pdf_url": pdf_url, "data": meal_plan_data, "meals": []}
-
-        # Extract meals from the generated data
-        if "results" in meal_plan_data:
-            for day in meal_plan_data["results"]:
-                for meal in day["meals"]:
-                    meal_plan_request["meals"].append(
-                        {
-                            "weekday": day["weekday"],
-                            "slot": meal["slot"],
-                            "meal": meal["meal"],
-                            "ingredients": meal.get("ingredients", []),
-                            "recipe": {
-                                "title": meal["meal"],
-                                "ingredients": meal.get("ingredients", []),
-                                "steps": [],  # Steps would need to be generated or provided
-                            },
-                        }
-                    )
+        meal_plan_request = {
+            "pdf_url": pdf_url,
+            "data": meal_plan_data,
+        }
 
         supabase.create_meal_plan(user_id, meal_plan_request)
     except Exception as e:
@@ -626,7 +656,7 @@ async def get_meal_plan(meal_plan_id: str, user=Depends(get_current_user)):
 @app.get("/mealplans")
 async def list_meal_plans(user=Depends(get_current_user)):
     """List all meal plans"""
-    return await supabase.list_meal_plans()
+    return supabase.list_meal_plans()
 
 
 @app.put("/mealplans/{meal_plan_id}")

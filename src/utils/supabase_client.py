@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -86,32 +86,6 @@ class SupabaseClient:
         }
         meal_plan = self.client.table("meal_plans").insert(meal_plan_data).execute()
 
-        # Create meal plan recipes for each meal
-        if "meals" in data:
-            for meal in data["meals"]:
-                meal_plan_recipe_data = {
-                    "meal_plan_id": meal_plan.data[0]["id"],
-                    "weekday": meal["weekday"],
-                    "meal_slot": meal["slot"],
-                    "created_at": datetime.utcnow().isoformat(),
-                    "updated_at": datetime.utcnow().isoformat(),
-                }
-                meal_plan_recipe = (
-                    self.client.table("meal_plan_recipes")
-                    .insert(meal_plan_recipe_data)
-                    .execute()
-                )
-
-                if "recipe" in meal:
-                    recipe_data = {
-                        "meal_plan_recipe_id": meal_plan_recipe.data[0]["id"],
-                        "profile_id": profile_id,
-                        **meal["recipe"],
-                        "created_at": datetime.utcnow().isoformat(),
-                        "updated_at": datetime.utcnow().isoformat(),
-                    }
-                    self.client.table("recipes").insert(recipe_data).execute()
-
         return meal_plan
 
     async def get_meal_plan(self, meal_plan_id: str) -> Optional[Dict[str, Any]]:
@@ -121,7 +95,7 @@ class SupabaseClient:
         )
         return response.data[0] if response.data else None
 
-    async def list_meal_plans(self) -> List[Dict[str, Any]]:
+    def list_meal_plans(self) -> List[Dict[str, Any]]:
         """List all meal plans sorted by creation date (newest first)"""
         response = (
             self.client.table("meal_plans")
@@ -259,6 +233,38 @@ class SupabaseClient:
             List of file objects
         """
         return self.client.storage.from_(bucket).list(path=path)
+
+    async def save_recommendations(
+        self, profile_id: str, meal_plan_id: str, recommendations: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Save recipe recommendations to the database
+        Args:
+            profile_id: The ID of the user profile
+            meal_plan_id: The ID of the meal plan
+            recommendations: List of recommendation objects containing recipe details
+        Returns:
+            The saved recommendations
+        """
+        recommendations_data = [
+            {
+                "profile_id": profile_id,
+                "meal_plan_id": meal_plan_id,
+                "weekday": rec["weekday"],
+                "slot": rec["slot"],
+                "recipe_title": rec["recipe_title"],
+                "recipe_link": rec["recipe_link"],
+                "recipe_thumbnail": rec["recipe_thumbnail"],
+                "created_at": datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            for rec in recommendations
+        ]
+
+        response = (
+            self.client.table("recommendations").insert(recommendations_data).execute()
+        )
+        return response.data
 
 
 # Create a singleton instance
