@@ -359,9 +359,63 @@ async def get_profile(user=Depends(get_current_user)):
     return profile
 
 
-@app.put("/profile")
+@app.post("/profile/image")
+async def upload_profile_image(
+    file: UploadFile = File(...), user=Depends(get_current_user)
+):
+    """Upload a profile image and update the user's profile"""
+    # Validate file type
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+
+    # Read file content
+    file_content = await file.read()
+
+    # Generate unique file path with user folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = f"profile_images/{user['id']}/{timestamp}_{file.filename}"
+
+    # Upload to Supabase storage
+    try:
+        image_url = await supabase.upload_file(
+            "images",
+            file_path,
+            file_content,
+            file_options={"content-type": file.content_type},
+        )
+
+        # Update the user's profile with the image URL
+        await supabase.update_profile(user["id"], {"profile_image": image_url})
+
+        return {
+            "success": True,
+            "image_url": image_url,
+            "file_name": file.filename,
+            "uploaded_at": timestamp,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading image: {str(e)}")
+
+
 async def update_profile(data: Dict[str, Any], user=Depends(get_current_user)):
     """Update the current user's profile"""
+    # Check if all required fields are completed to mark as onboarded
+    required_fields = [
+        "allergies",
+        "sports",
+        "country",
+        "date_of_birth",
+        "sports_time_per_week",
+        "diet_restrictions",
+    ]
+    is_onboarded = all(
+        field in data and data[field] is not None for field in required_fields
+    )
+
+    if is_onboarded:
+        data["is_onboarded"] = True
+
     return await supabase.update_profile(user["id"], data)
 
 
@@ -527,7 +581,14 @@ async def generate_mealplan(
         )
 
 
-# Meal Plans CRUD endpoints
+# Endpoint to check if the current user has uploaded a meal plan
+@app.get("/mealplans/exists")
+async def check_meal_plan_exists(user=Depends(get_current_user)):
+    """Check if the current user has uploaded a meal plan"""
+    files = await supabase.list_files("pdfs", path=f"meal_plans/{user['id']}")
+    return {"exists": len(files) > 0}
+
+
 @app.post("/mealplans")
 async def create_meal_plan(meal_plan: MealPlanRequest, user=Depends(get_current_user)):
     """Create a new meal plan with optional recipes"""
