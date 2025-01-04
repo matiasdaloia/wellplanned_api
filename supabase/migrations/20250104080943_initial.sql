@@ -161,7 +161,7 @@ create policy "Users can delete their own recipes" on public.recipes for delete 
 -- Create profile on user signup
 create function public.handle_new_user() returns trigger language plpgsql security definer
 set
-    search_path = public as $ $ begin
+    search_path = public as $$ begin
 insert into
     public.profiles (id, first_name, last_name, updated_at)
 values
@@ -176,7 +176,7 @@ return new;
 
 end;
 
-$ $;
+$$;
 
 -- Trigger for creating profile
 create trigger on_auth_user_created
@@ -185,13 +185,13 @@ insert
     on auth.users for each row execute procedure public.handle_new_user();
 
 -- Function to automatically update updated_at
-create function public.handle_updated_at() returns trigger language plpgsql as $ $ begin new.updated_at = now();
+create function public.handle_updated_at() returns trigger language plpgsql as $$ begin new.updated_at = now();
 
 return new;
 
 end;
 
-$ $;
+$$;
 
 -- Add updated_at triggers
 create trigger handle_updated_at_profiles before

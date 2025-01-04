@@ -1,5 +1,5 @@
+import asyncio
 import json
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +30,8 @@ load_dotenv()
 
 
 app = FastAPI()
+
+
 security = HTTPBearer()
 
 
@@ -435,6 +437,39 @@ async def stream_mealplan(
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
 
+async def save_generated_meal_plan(
+    user_id: str, pdf_url: str, meal_plan_data: Dict[str, Any]
+):
+    """Save the generated meal plan to the database"""
+    try:
+        # Create meal plan
+        meal_plan_request = {"pdf_url": pdf_url, "data": meal_plan_data, "meals": []}
+
+        # Extract meals from the generated data
+        if "results" in meal_plan_data:
+            for day in meal_plan_data["results"]:
+                for meal in day["meals"]:
+                    meal_plan_request["meals"].append(
+                        {
+                            "weekday": day["weekday"],
+                            "slot": meal["slot"],
+                            "meal": meal["meal"],
+                            "ingredients": meal.get("ingredients", []),
+                            "recipe": {
+                                "title": meal["meal"],
+                                "ingredients": meal.get("ingredients", []),
+                                "steps": [],  # Steps would need to be generated or provided
+                            },
+                        }
+                    )
+
+        await supabase.create_meal_plan(user_id, meal_plan_request)
+    except Exception as e:
+        print(f"Error saving meal plan: {e}")
+        # Don't raise the exception - we want to continue returning the streaming response
+        # but log the error for debugging
+
+
 @app.post("/mealplans/generate/overview")
 async def generate_mealplan(
     file: UploadFile = File(...),
@@ -454,15 +489,29 @@ async def generate_mealplan(
     file_path = f"meal_plans/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
     pdf_url = await supabase.upload_file("pdfs", file_path, file_content)
 
-    # Generate meal plan
-    response = StreamingResponse(
-        stream_mealplan(
+    # Create an async generator that will both stream the response and save the meal plan
+    async def generate_and_save():
+        full_response = None
+        async for chunk in stream_mealplan(
             file_content=file_content, language=language, preferences=preferences
-        ),
+        ):
+            # Parse the chunk to get the meal plan data
+            chunk_data = json.loads(chunk.replace("data: ", ""))
+
+            # If this is the complete response, save the meal plan
+            if chunk_data["type"] == "complete":
+                full_response = chunk_data["content"]
+                # Save the meal plan in the background
+                asyncio.create_task(
+                    save_generated_meal_plan(user["id"], pdf_url, full_response)
+                )
+
+            yield chunk
+
+    return StreamingResponse(
+        generate_and_save(),
         media_type="text/event-stream",
     )
-
-    return response
 
 
 # Meal Plans CRUD endpoints
