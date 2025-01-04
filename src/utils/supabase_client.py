@@ -79,9 +79,7 @@ class SupabaseClient:
         )
 
     # Meal Plans
-    async def create_meal_plan(
-        self, profile_id: str, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def create_meal_plan(self, profile_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new meal plan"""
         meal_plan_data = {
             "profile_id": profile_id,
@@ -90,9 +88,7 @@ class SupabaseClient:
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
         }
-        meal_plan = (
-            await self.client.table("meal_plans").insert(meal_plan_data).execute()
-        )
+        meal_plan = self.client.table("meal_plans").insert(meal_plan_data).execute()
 
         # Create meal plan recipes for each meal
         if "meals" in data:
@@ -105,7 +101,7 @@ class SupabaseClient:
                     "updated_at": datetime.utcnow().isoformat(),
                 }
                 meal_plan_recipe = (
-                    await self.client.table("meal_plan_recipes")
+                    self.client.table("meal_plan_recipes")
                     .insert(meal_plan_recipe_data)
                     .execute()
                 )
@@ -118,7 +114,7 @@ class SupabaseClient:
                         "created_at": datetime.utcnow().isoformat(),
                         "updated_at": datetime.utcnow().isoformat(),
                     }
-                    await self.client.table("recipes").insert(recipe_data).execute()
+                    self.client.table("recipes").insert(recipe_data).execute()
 
         return meal_plan
 
@@ -130,8 +126,13 @@ class SupabaseClient:
         return response.data[0] if response.data else None
 
     async def list_meal_plans(self) -> List[Dict[str, Any]]:
-        """List all meal plans"""
-        response = self.client.table("meal_plans").select("*").execute()
+        """List all meal plans sorted by creation date (newest first)"""
+        response = (
+            self.client.table("meal_plans")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
         return response.data
 
     async def update_meal_plan(
@@ -230,9 +231,38 @@ class SupabaseClient:
         """Delete a file from storage"""
         self.client.storage.from_(bucket).remove([file_path])
 
-    async def list_files(self, bucket: str) -> List[Dict[str, Any]]:
-        """List all files in a bucket"""
-        return self.client.storage.from_(bucket).list()
+    async def get_file_url(self, bucket: str, file_path: str) -> str:
+        """
+        Get the public URL of a file in storage
+        Args:
+            bucket: The name of the bucket
+            file_path: The path to the file within the bucket
+        Returns:
+            The public URL of the file
+        """
+        return self.client.storage.from_(bucket).get_public_url(file_path)
+
+    async def download_file(self, bucket: str, file_path: str) -> bytes:
+        """
+        Download a file from storage
+        Args:
+            bucket: The name of the bucket
+            file_path: The path to the file within the bucket
+        Returns:
+            The file content as bytes
+        """
+        return self.client.storage.from_(bucket).download(file_path)
+
+    async def list_files(self, bucket: str, path: str = None) -> List[Dict[str, Any]]:
+        """
+        List all files in a bucket
+        Args:
+            bucket: The name of the bucket
+            path: Optional path within the bucket to list files from
+        Returns:
+            List of file objects
+        """
+        return self.client.storage.from_(bucket).list(path=path)
 
 
 # Create a singleton instance

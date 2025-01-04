@@ -461,7 +461,7 @@ async def save_generated_meal_plan(
                         }
                     )
 
-        await supabase.create_meal_plan(user_id, meal_plan_request)
+        supabase.create_meal_plan(user_id, meal_plan_request)
     except Exception as e:
         print(f"Error saving meal plan: {e}")
         # Don't raise the exception - we want to continue returning the streaming response
@@ -484,10 +484,14 @@ async def generate_mealplan(
 
         # Get latest file
         latest_file = sorted(files, key=lambda x: x["name"], reverse=True)[0]
-        pdf_url = await supabase.get_file_url("pdfs", latest_file["name"])
+        pdf_url = await supabase.get_file_url(
+            "pdfs", f"meal_plans/{user['id']}/{latest_file['name']}"
+        )
 
         # Download the file content
-        file_content = await supabase.download_file("pdfs", latest_file["name"])
+        file_content = await supabase.download_file(
+            "pdfs", f"meal_plans/{user['id']}/{latest_file['name']}"
+        )
 
         if len(file_content) > 32 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File size exceeds 32MB limit")
