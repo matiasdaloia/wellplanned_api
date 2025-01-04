@@ -1,11 +1,12 @@
 import json
 import os
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.callbacks import get_openai_callback
@@ -23,11 +24,52 @@ from typing_extensions import Annotated, TypedDict
 
 from src.utils.execution_timer import ExecutionTimer
 from src.utils.pdf_utils import pdf_to_base64_images
+from src.utils.supabase_client import supabase
 
 load_dotenv()
 
 
 app = FastAPI()
+security = HTTPBearer()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> Dict[str, Any]:
+    """
+    Validate JWT token from Authorization header and return user
+    The token should be the session token from Supabase client's auth.getSession()
+    """
+    try:
+        # Get user from JWT token
+        user = await supabase.get_user_by_jwt(credentials.credentials)
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or expired token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Get user's profile
+        profile = await supabase.get_profile(user.user.id)
+        if not profile:
+            raise HTTPException(
+                status_code=404,
+                detail="User profile not found",
+            )
+
+        return {
+            "id": profile["id"],
+            "email": user.user.email,
+            "first_name": profile["first_name"],
+            "last_name": profile["last_name"],
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=401,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 llm = ChatGoogleGenerativeAI(
@@ -80,15 +122,29 @@ class GenerateMealPlanRequest(PydanticBaseModel):
     language: str
 
 
+class RecipeRequest(PydanticBaseModel):
+    title: str
+    thumbnail: Optional[str] = None
+    author: Optional[str] = None
+    difficulty: Optional[str] = None
+    time: Optional[str] = None
+    servings: Optional[str] = None
+    ingredients: List[str]
+    steps: List[str]
+
+
 class MealRequest(PydanticBaseModel):
     slot: int
     meal: str
     ingredients: list[str]
+    recipe: Optional[RecipeRequest] = None
 
 
 class MealPlanRequest(PydanticBaseModel):
     weekday: int
     meals: list[MealRequest]
+    pdf_url: Optional[str] = None
+    data: Dict[str, Any]
 
 
 class GenerateMealPlanRecommendationsRequest(PydanticBaseModel):
@@ -105,6 +161,18 @@ class DietaryPreferences(PydanticBaseModel):
     dietary_restrictions: Optional[List[str]] = None
     cuisines: Optional[List[str]] = None
     allergies: Optional[List[str]] = None
+
+
+class SignUpRequest(PydanticBaseModel):
+    email: str
+    password: str
+    first_name: str
+    last_name: str
+
+
+class SignInRequest(PydanticBaseModel):
+    email: str
+    password: str
 
 
 def get_recipe_breakdown_docs(url):
@@ -258,17 +326,56 @@ def generate_mealplan_recommendations(
     return recommendations
 
 
-@app.post("/recipes/breakdown")
-async def get_breakdown(request_body: GenerateRecipeBreakdownRequest):
-    recipe_breakdown = get_recipe_breakdown(request_body)
+# Auth endpoints
+@app.post("/auth/signup")
+async def signup(request: SignUpRequest):
+    """Sign up a new user"""
+    return await supabase.sign_up(
+        request.email, request.password, request.first_name, request.last_name
+    )
 
+
+@app.post("/auth/signin")
+async def signin(request: SignInRequest):
+    """Sign in a user"""
+    return await supabase.sign_in(request.email, request.password)
+
+
+@app.post("/auth/signout")
+async def signout(user=Depends(get_current_user)):
+    """Sign out the current user"""
+    await supabase.sign_out()
+    return {"message": "Successfully signed out"}
+
+
+@app.get("/profile")
+async def get_profile(user=Depends(get_current_user)):
+    """Get the current user's profile"""
+    profile = await supabase.get_profile(user["id"])
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+
+@app.put("/profile")
+async def update_profile(data: Dict[str, Any], user=Depends(get_current_user)):
+    """Update the current user's profile"""
+    return await supabase.update_profile(user["id"], data)
+
+
+@app.post("/recipes/breakdown")
+async def get_breakdown(
+    request_body: GenerateRecipeBreakdownRequest, user=Depends(get_current_user)
+):
+    recipe_breakdown = get_recipe_breakdown(request_body)
     return recipe_breakdown
 
 
 @app.post("/mealplans/generate/recommendations")
-async def generate_mealplan(request_body: GenerateMealPlanRequest):
+async def generate_mealplan(
+    request_body: GenerateMealPlanRequest, user=Depends(get_current_user)
+):
     meal_plan = generate_mealplan_recommendations(request_body)
-
     return meal_plan
 
 
@@ -333,6 +440,7 @@ async def generate_mealplan(
     file: UploadFile = File(...),
     language: str = Form("en"),
     preferences: Optional[str] = Form(None),
+    user=Depends(get_current_user),
 ):
     if not file.content_type == "application/pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
@@ -342,9 +450,105 @@ async def generate_mealplan(
     if len(file_content) > 32 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File size exceeds 32MB limit")
 
-    return StreamingResponse(
+    # Upload PDF to Supabase storage
+    file_path = f"meal_plans/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+    pdf_url = await supabase.upload_file("pdfs", file_path, file_content)
+
+    # Generate meal plan
+    response = StreamingResponse(
         stream_mealplan(
             file_content=file_content, language=language, preferences=preferences
         ),
         media_type="text/event-stream",
     )
+
+    return response
+
+
+# Meal Plans CRUD endpoints
+@app.post("/mealplans")
+async def create_meal_plan(meal_plan: MealPlanRequest, user=Depends(get_current_user)):
+    """Create a new meal plan with optional recipes"""
+    return await supabase.create_meal_plan(user["id"], meal_plan.dict())
+
+
+@app.get("/mealplans/{meal_plan_id}/with-recipes")
+async def get_meal_plan_with_recipes(meal_plan_id: str, user=Depends(get_current_user)):
+    """Get a meal plan with all its recipes"""
+    meal_plan = await supabase.get_meal_plan_with_recipes(meal_plan_id)
+    if not meal_plan:
+        raise HTTPException(status_code=404, detail="Meal plan not found")
+    return meal_plan
+
+
+@app.get("/mealplans/{meal_plan_id}")
+async def get_meal_plan(meal_plan_id: str, user=Depends(get_current_user)):
+    """Get a meal plan by ID"""
+    meal_plan = await supabase.get_meal_plan(meal_plan_id)
+    if not meal_plan:
+        raise HTTPException(status_code=404, detail="Meal plan not found")
+    return meal_plan
+
+
+@app.get("/mealplans")
+async def list_meal_plans(user=Depends(get_current_user)):
+    """List all meal plans"""
+    return await supabase.list_meal_plans()
+
+
+@app.put("/mealplans/{meal_plan_id}")
+async def update_meal_plan(
+    meal_plan_id: str, meal_plan: MealPlanRequest, user=Depends(get_current_user)
+):
+    """Update a meal plan"""
+    return await supabase.update_meal_plan(meal_plan_id, meal_plan.dict())
+
+
+@app.delete("/mealplans/{meal_plan_id}")
+async def delete_meal_plan(meal_plan_id: str, user=Depends(get_current_user)):
+    """Delete a meal plan"""
+    await supabase.delete_meal_plan(meal_plan_id)
+    return {"message": "Meal plan deleted"}
+
+
+# Recipes CRUD endpoints
+@app.post("/recipes")
+async def create_recipe(
+    recipe: GenerateRecipeBreakdownRequest, user=Depends(get_current_user)
+):
+    """Create a new recipe"""
+    recipe_data = get_recipe_breakdown(recipe)
+    return await supabase.create_recipe(user["id"], recipe_data)
+
+
+@app.get("/recipes/{recipe_id}")
+async def get_recipe(recipe_id: str, user=Depends(get_current_user)):
+    """Get a recipe by ID"""
+    recipe = await supabase.get_recipe(recipe_id)
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    return recipe
+
+
+@app.get("/recipes")
+async def list_recipes(user=Depends(get_current_user)):
+    """List all recipes"""
+    return await supabase.list_recipes()
+
+
+@app.put("/recipes/{recipe_id}")
+async def update_recipe(
+    recipe_id: str,
+    recipe: GenerateRecipeBreakdownRequest,
+    user=Depends(get_current_user),
+):
+    """Update a recipe"""
+    recipe_data = get_recipe_breakdown(recipe)
+    return await supabase.update_recipe(recipe_id, recipe_data)
+
+
+@app.delete("/recipes/{recipe_id}")
+async def delete_recipe(recipe_id: str, user=Depends(get_current_user)):
+    """Delete a recipe"""
+    await supabase.delete_recipe(recipe_id)
+    return {"message": "Recipe deleted"}

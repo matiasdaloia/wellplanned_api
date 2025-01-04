@@ -14,3 +14,4 @@ python-multipart
 PyMuPDF
 pillow
 httpx==0.27.2
+supabase
