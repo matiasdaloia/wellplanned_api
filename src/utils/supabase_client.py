@@ -70,13 +70,9 @@ class SupabaseClient:
 
         return response.data[0] if response.data else None
 
-    async def update_profile(
-        self, user_id: str, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def update_profile(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Update a user's profile"""
-        return (
-            await self.client.table("profiles").update(data).eq("id", user_id).execute()
-        )
+        return self.client.table("profiles").update(data).eq("id", user_id).execute()
 
     # Meal Plans
     def create_meal_plan(self, profile_id: str, data: Dict[str, Any]) -> Dict[str, Any]:

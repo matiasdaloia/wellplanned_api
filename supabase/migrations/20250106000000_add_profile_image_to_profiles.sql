@@ -2,4 +2,6 @@
 alter table
     public.profiles
 add
-    column profile_image text;
+    column profile_image text,
+add
+    column language text;

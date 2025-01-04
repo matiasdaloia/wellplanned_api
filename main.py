@@ -385,7 +385,7 @@ async def upload_profile_image(
         )
 
         # Update the user's profile with the image URL
-        await supabase.update_profile(user["id"], {"profile_image": image_url})
+        supabase.update_profile(user["id"], {"profile_image": image_url})
 
         return {
             "success": True,
@@ -398,25 +398,35 @@ async def upload_profile_image(
         raise HTTPException(status_code=500, detail=f"Error uploading image: {str(e)}")
 
 
+@app.put("/profile")
 async def update_profile(data: Dict[str, Any], user=Depends(get_current_user)):
     """Update the current user's profile"""
+    """Update the current user's profile with partial updates"""
+    # Fetch the current profile
+    current_profile = supabase.get_profile(user["id"])
+    if not current_profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Update the profile with provided data
+    updated_profile = {**current_profile, **data}
+
     # Check if all required fields are completed to mark as onboarded
     required_fields = [
         "allergies",
         "sports",
         "country",
-        "date_of_birth",
         "sports_time_per_week",
         "diet_restrictions",
     ]
     is_onboarded = all(
-        field in data and data[field] is not None for field in required_fields
+        field in updated_profile and updated_profile[field] is not None
+        for field in required_fields
     )
 
     if is_onboarded:
-        data["is_onboarded"] = True
+        updated_profile["is_onboarded"] = True
 
-    return await supabase.update_profile(user["id"], data)
+    return supabase.update_profile(user["id"], updated_profile)
 
 
 @app.post("/recipes/breakdown")
