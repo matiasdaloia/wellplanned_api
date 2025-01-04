@@ -44,7 +44,7 @@ async def get_current_user(
     """
     try:
         # Get user from JWT token
-        user = await supabase.get_user_by_jwt(credentials.credentials)
+        user = supabase.get_user_by_jwt(credentials.credentials)
         if not user:
             raise HTTPException(
                 status_code=401,
@@ -53,7 +53,7 @@ async def get_current_user(
             )
 
         # Get user's profile
-        profile = await supabase.get_profile(user.user.id)
+        profile = supabase.get_profile(user.user.id)
         if not profile:
             raise HTTPException(
                 status_code=404,
@@ -487,7 +487,12 @@ async def generate_mealplan(
 
     # Upload PDF to Supabase storage
     file_path = f"meal_plans/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
-    pdf_url = await supabase.upload_file("pdfs", file_path, file_content)
+    pdf_url = await supabase.upload_file(
+        "pdfs",
+        file_path,
+        file_content,
+        file_options={"content-type": "application/pdf"},
+    )
 
     # Create an async generator that will both stream the response and save the meal plan
     async def generate_and_save():

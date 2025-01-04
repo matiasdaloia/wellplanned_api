@@ -54,21 +54,20 @@ class SupabaseClient:
         """Sign out the current user"""
         await self.client.auth.sign_out()
 
-    async def get_user_by_jwt(self, jwt: str) -> Optional[Dict[str, Any]]:
+    def get_user_by_jwt(self, jwt: str) -> Optional[Dict[str, Any]]:
         """Get user from JWT token"""
         try:
             # Set the session token for this request
-            self.client.auth.set_session(jwt)
-            return await self.client.auth.get_user()
+            self.client.auth.set_session(jwt, jwt)
+            return self.client.auth.get_user(jwt)
         except Exception as e:
             print(f"Error getting user from JWT: {e}")
             return None
 
-    async def get_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+    def get_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get a user's profile"""
-        response = (
-            await self.client.table("profiles").select("*").eq("id", user_id).execute()
-        )
+        response = self.client.table("profiles").select("*").eq("id", user_id).execute()
+
         return response.data[0] if response.data else None
 
     async def update_profile(
@@ -216,12 +215,16 @@ class SupabaseClient:
         self.client.table("recipes").delete().eq("id", recipe_id).execute()
 
     # File Storage
-    async def upload_file(self, bucket: str, file_path: str, file_data: bytes) -> str:
+    async def upload_file(
+        self, bucket: str, file_path: str, file_data: bytes, file_options: dict
+    ) -> str:
         """
         Upload a file to Supabase storage
         Returns the public URL of the uploaded file
         """
-        response = self.client.storage.from_(bucket).upload(file_path, file_data)
+        response = self.client.storage.from_(bucket).upload(
+            file_path, file_data, file_options
+        )
         # Get public URL
         return self.client.storage.from_(bucket).get_public_url(file_path)
 
