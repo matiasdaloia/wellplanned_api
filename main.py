@@ -472,51 +472,58 @@ async def save_generated_meal_plan(
 
 @app.post("/mealplans/generate/overview")
 async def generate_mealplan(
-    file: UploadFile = File(...),
     language: str = Form("en"),
     preferences: Optional[str] = Form(None),
     user=Depends(get_current_user),
 ):
-    if not file.content_type == "application/pdf":
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    try:
+        # Get the latest PDF URL and details
+        files = await supabase.list_files("pdfs", path=f"meal_plans/{user['id']}")
 
-    file_content = await file.read()
+        if not files:
+            raise HTTPException(
+                status_code=404,
+                detail="No PDF files found. Please upload a meal plan PDF first.",
+            )
 
-    if len(file_content) > 32 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File size exceeds 32MB limit")
+        # Get latest file
+        latest_file = sorted(files, key=lambda x: x["name"], reverse=True)[0]
+        pdf_url = await supabase.get_file_url("pdfs", latest_file["name"])
 
-    # Upload PDF to Supabase storage
-    file_path = f"meal_plans/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
-    pdf_url = await supabase.upload_file(
-        "pdfs",
-        file_path,
-        file_content,
-        file_options={"content-type": "application/pdf"},
-    )
+        # Download the file content
+        file_content = await supabase.download_file("pdfs", latest_file["name"])
 
-    # Create an async generator that will both stream the response and save the meal plan
-    async def generate_and_save():
-        full_response = None
-        async for chunk in stream_mealplan(
-            file_content=file_content, language=language, preferences=preferences
-        ):
-            # Parse the chunk to get the meal plan data
-            chunk_data = json.loads(chunk.replace("data: ", ""))
+        if len(file_content) > 32 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File size exceeds 32MB limit")
 
-            # If this is the complete response, save the meal plan
-            if chunk_data["type"] == "complete":
-                full_response = chunk_data["content"]
-                # Save the meal plan in the background
-                asyncio.create_task(
-                    save_generated_meal_plan(user["id"], pdf_url, full_response)
-                )
+        # Create an async generator that will both stream the response and save the meal plan
+        async def generate_and_save():
+            full_response = None
+            async for chunk in stream_mealplan(
+                file_content=file_content, language=language, preferences=preferences
+            ):
+                # Parse the chunk to get the meal plan data
+                chunk_data = json.loads(chunk.replace("data: ", ""))
 
-            yield chunk
+                # If this is the complete response, save the meal plan
+                if chunk_data["type"] == "complete":
+                    full_response = chunk_data["content"]
+                    # Save the meal plan in the background
+                    asyncio.create_task(
+                        save_generated_meal_plan(user["id"], pdf_url, full_response)
+                    )
 
-    return StreamingResponse(
-        generate_and_save(),
-        media_type="text/event-stream",
-    )
+                yield chunk
+
+        return StreamingResponse(
+            generate_and_save(),
+            media_type="text/event-stream",
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error generating meal plan: {str(e)}"
+        )
 
 
 # Meal Plans CRUD endpoints
@@ -606,3 +613,77 @@ async def delete_recipe(recipe_id: str, user=Depends(get_current_user)):
     """Delete a recipe"""
     await supabase.delete_recipe(recipe_id)
     return {"message": "Recipe deleted"}
+
+
+@app.post("/mealplans/upload")
+async def upload_mealplan_pdf(
+    file: UploadFile = File(...), user=Depends(get_current_user)
+):
+    """Upload a PDF file for meal plan generation and return the storage URL"""
+
+    # Validate file type
+    if not file.content_type == "application/pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    # Read file content
+    file_content = await file.read()
+
+    # Check file size (32MB limit)
+    if len(file_content) > 32 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size exceeds 32MB limit")
+
+    try:
+        # Generate unique file path with user folder
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = f"meal_plans/{user['id']}/{timestamp}_{file.filename}"
+
+        # Upload to Supabase storage
+        pdf_url = await supabase.upload_file(
+            "pdfs",
+            file_path,
+            file_content,
+            file_options={"content-type": "application/pdf"},
+        )
+
+        return {
+            "success": True,
+            "pdf_url": pdf_url,
+            "file_name": file.filename,
+            "uploaded_at": timestamp,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
+
+
+@app.get("/mealplans/upload/latest")
+async def get_latest_mealplan_pdf(user=Depends(get_current_user)):
+    """Get the URL of the latest uploaded meal plan PDF for the current user"""
+    try:
+        # List files in user's directory
+        files = await supabase.list_files("pdfs", path=f"meal_plans/{user['id']}")
+
+        if not files:
+            raise HTTPException(
+                status_code=404, detail="No PDF files found for this user"
+            )
+
+        # Sort files by name (which includes timestamp) to get the latest
+        latest_file = sorted(files, key=lambda x: x["name"], reverse=True)[0]
+
+        # Get the URL for the latest file
+        pdf_url = await supabase.get_file_url("pdfs", latest_file["name"])
+
+        return {
+            "success": True,
+            "pdf_url": pdf_url,
+            "file_name": latest_file["name"].split("_", 2)[
+                -1
+            ],  # Extract original filename
+            "uploaded_at": latest_file["created_at"],
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error retrieving latest PDF: {str(e)}"
+        )

@@ -222,9 +222,7 @@ class SupabaseClient:
         Upload a file to Supabase storage
         Returns the public URL of the uploaded file
         """
-        response = self.client.storage.from_(bucket).upload(
-            file_path, file_data, file_options
-        )
+        self.client.storage.from_(bucket).upload(file_path, file_data, file_options)
         # Get public URL
         return self.client.storage.from_(bucket).get_public_url(file_path)
 
