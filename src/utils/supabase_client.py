@@ -212,7 +212,7 @@ class SupabaseClient:
         self.client.table("recipes").delete().eq("id", recipe_id).execute()
 
     # File Storage
-    async def upload_file(
+    def upload_file(
         self, bucket: str, file_path: str, file_data: bytes, file_options: dict
     ) -> str:
         """

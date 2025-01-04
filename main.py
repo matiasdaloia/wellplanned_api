@@ -373,11 +373,11 @@ async def upload_profile_image(
 
     # Generate unique file path with user folder
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_path = f"profile_images/{user['id']}/{timestamp}_{file.filename}"
+    file_path = f"avatars/{user['id']}_{timestamp}_{file.filename}"
 
     # Upload to Supabase storage
     try:
-        image_url = await supabase.upload_file(
+        image_url = supabase.upload_file(
             "images",
             file_path,
             file_content,
