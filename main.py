@@ -353,7 +353,7 @@ async def signout(user=Depends(get_current_user)):
 @app.get("/profile")
 async def get_profile(user=Depends(get_current_user)):
     """Get the current user's profile"""
-    profile = await supabase.get_profile(user["id"])
+    profile = supabase.get_profile(user["id"])
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     return profile
