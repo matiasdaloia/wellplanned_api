@@ -15,8 +15,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel
 from langchain_core.pydantic_v1 import Field
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel as PydanticBaseModel
 
 from src.utils.logger import get_logger, log_execution_time_async
@@ -119,10 +119,6 @@ class RecipeBreakdown(TypedDict):
     steps: Annotated[List[str], ..., "The steps to prepare the recipe"]
 
 
-class RecipeBreakdownResult(TypedDict):
-    result: Annotated[RecipeBreakdown, "The structured recipe breakdown"]
-
-
 class GenerateMealPlanRequest(PydanticBaseModel):
     pdf_url: str
     language: str
@@ -222,78 +218,6 @@ async def get_current_user(
             detail=str(e),
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-
-@log_execution_time_async
-async def generate_mealplan_from_pdf(
-    file_content: bytes, language: str, preferences: Optional[DietaryPreferences] = None
-) -> List[MealPlanResult]:
-    try:
-        logger.info(
-            "Starting meal plan generation",
-            extra={
-                "extra_data": {
-                    "language": language,
-                    "preferences": preferences.dict() if preferences else None,
-                    "content_size": len(file_content),
-                }
-            },
-        )
-
-        base64_images = pdf_to_base64_images(file_content)
-        llm = ChatOpenAI(
-            temperature=0,
-            model="gpt-4o",
-            stream_usage=True,
-        )
-        structured_llm = llm.with_structured_output(MealPlanResult)
-
-        messages = [
-            SystemMessage(
-                content="""
-            You will be provided with a patient diet plan from a nutritionist. Your task is to extract a 7-day meal plan for the patient following these guidelines:
-                - For each meal, only select one of the available options, not all of them.
-                - Include quantity of the ingredients for each meal if available.
-                - When there are multiple protein or main dish options, choose only one.
-                - Include ALL meals of the day
-                - Include ALL days of the week
-                - If it says "free choice", choose any meal of the same type (e.g. breakfast, lunch, etc.)
-                - For the recipeQuery field, create a simplified search query. For example:
-                  * If meal is "120g pasta, 200g chicken breast, vegetables" → recipeQuery should be "healthy pasta chicken vegetables recipe"
-                  * If meal is "2 eggs, 30g cheese, bread" → recipeQuery should be "healthy eggs cheese toast recipe"
-                  * Remove quantities and keep only main ingredients for better search results
-            """
-            )
-        ]
-
-        for base64_image in base64_images:
-            messages.append(
-                HumanMessage(
-                    content=[
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            },
-                        }
-                    ]
-                )
-            )
-
-        full = None
-
-        async for chunk in structured_llm.astream(messages):
-            logger.debug(
-                "Received chunk from LLM", extra={"extra_data": {"chunk": str(chunk)}}
-            )
-            full = chunk
-
-        logger.info("Completed meal plan generation")
-        return full
-
-    except Exception as e:
-        logger.error("Error generating meal plan", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 def get_current_weekday() -> int:
@@ -516,11 +440,10 @@ async def stream_mealplan(file_content: bytes):
 
         full_response = None
         async for chunk in structured_llm.astream(messages):
-            if full_response is None:
-                full_response = chunk
-            else:
-                full_response = chunk
-
+            logger.debug(
+                "Received chunk from LLM", extra={"extra_data": {"chunk": str(chunk)}}
+            )
+            full_response = chunk
             yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
 
         # Send the final complete response
@@ -785,56 +708,49 @@ async def stream_recipe_breakdown(url: str, language: str = "en"):
             urls=[url],
         )
 
-        # Add error handling for the loading process
-        try:
-            data = loader.load()
-            if not data:
-                raise ValueError("Failed to load recipe content")
-        except Exception as e:
-            logger.error(f"Error loading recipe URL: {str(e)}", exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Failed to load recipe content. Please try again later.'})}\n\n"
-            return
+        documents = loader.load()
+
+        combined_content = "\n\n".join(doc.page_content for doc in documents)
 
         # Use OpenAI for structured recipe parsing
         llm = ChatOpenAI(
             temperature=0.3,
-            model="gpt-4o-mini",
-            stream=True,
+            model="gpt-4o",
+            stream_usage=True,
         )
-        structured_llm = llm.with_structured_output(RecipeBreakdownResult)
+        structured_llm = llm.with_structured_output(RecipeBreakdown)
 
-        prompt = PromptTemplate.from_template(
-            """
+        messages = [
+            SystemMessage(
+                content="""
             Analyze the recipe webpage content and extract the recipe information in a structured format.
-            Answer must be in: {language}
 
-            Only include factual information from the webpage. If a field is not available, use a sensible default or omit it.
-            Do not make up or infer missing information.
+            Extract the following information:
+            - title: The title of the recipe
+            - author: The author of the recipe (if available)
+            - difficulty: The difficulty level (if available)
+            - time: The time it takes to prepare the recipe (if available)
+            - servings: The number of servings (use 4 if not specified, or adjust ingredients for 4 servings if more)
+            - ingredients: List of ingredients with quantities
+            - steps: List of preparation steps
 
-            Consider 4 servings for the number of portions if not specified. Or if it's specified but for more than 4, calculate the ingredients for 4 servings.
-            
-            Context:
-            {context}
-            """
-        )
+            Only include factual information from the webpage. If a field is not available, omit it.
+            Do not make up or infer missing information."""
+            ),
+            HumanMessage(content=combined_content),
+        ]
 
-        chain = create_stuff_documents_chain(structured_llm, prompt)
-
-        # Initialize an empty dictionary to accumulate chunks
-        accumulated_data = {}
-        async for chunk in chain.astream(
-            {
-                "context": data,
-                "language": language,
-            }
-        ):
-            # Accumulate the chunks
-            if isinstance(chunk, dict):
-                accumulated_data.update(chunk)
+        # Initialize an empty response
+        full_response = None
+        async for chunk in structured_llm.astream(messages):
+            logger.debug(
+                "Received chunk from LLM", extra={"extra_data": {"chunk": str(chunk)}}
+            )
+            full_response = chunk
             yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
 
-        # Send the final complete response with the structured data
-        yield f"data: {json.dumps({'type': 'complete', 'content': accumulated_data})}\n\n"
+        # Send the final complete response
+        yield f"data: {json.dumps({'type': 'complete', 'content': full_response})}\n\n"
 
     except Exception as e:
         logger.error("Error generating recipe breakdown", exc_info=True)
