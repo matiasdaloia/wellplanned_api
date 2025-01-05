@@ -110,13 +110,17 @@ class MealPlanResult(TypedDict):
 
 
 class RecipeBreakdown(TypedDict):
-    title: Annotated[str, "The title of the recipe"]
-    author: Annotated[str, "The author of the recipe"]
-    difficulty: Annotated[str, "The difficulty level of the recipe"]
-    time: Annotated[str, "The time it takes to prepare the recipe"]
-    servings: Annotated[str, "The number of servings the recipe makes"]
-    ingredients: Annotated[List[str], "The ingredients needed for the recipe"]
-    steps: Annotated[List[str], "The steps to prepare the recipe"]
+    title: Annotated[str, ..., "The title of the recipe"]
+    author: Annotated[str, ..., "The author of the recipe"]
+    difficulty: Annotated[str, ..., "The difficulty level of the recipe"]
+    time: Annotated[str, ..., "The time it takes to prepare the recipe"]
+    servings: Annotated[str, ..., "The number of servings the recipe makes"]
+    ingredients: Annotated[List[str], ..., "The ingredients needed for the recipe"]
+    steps: Annotated[List[str], ..., "The steps to prepare the recipe"]
+
+
+class RecipeBreakdownResult(TypedDict):
+    result: Annotated[RecipeBreakdown, "The structured recipe breakdown"]
 
 
 class GenerateMealPlanRequest(PydanticBaseModel):
@@ -797,24 +801,17 @@ async def stream_recipe_breakdown(url: str, language: str = "en"):
             model="gpt-4o-mini",
             stream=True,
         )
-        structured_llm = llm.with_structured_output(RecipeBreakdown)
+        structured_llm = llm.with_structured_output(RecipeBreakdownResult)
 
         prompt = PromptTemplate.from_template(
             """
             Analyze the recipe webpage content and extract the recipe information in a structured format.
             Answer must be in: {language}
 
-            Extract the following information:
-            - Recipe title
-            - Author or website name
-            - Difficulty level (Easy/Medium/Hard)
-            - Total time (including prep and cooking)
-            - Number of servings/portions
-            - List of ingredients with quantities
-            - List of preparation steps
-
             Only include factual information from the webpage. If a field is not available, use a sensible default or omit it.
             Do not make up or infer missing information.
+
+            Consider 4 servings for the number of portions if not specified. Or if it's specified but for more than 4, calculate the ingredients for 4 servings.
             
             Context:
             {context}
