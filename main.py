@@ -298,17 +298,16 @@ def get_current_weekday() -> int:
     return datetime.now().weekday()
 
 
-async def stream_recommendations(latest_meal_plan: Dict[str, Any]):
+async def stream_recommendations(latest_meal_plan: Dict[str, Any], target_weekday: int):
     try:
         google_search = GoogleSerperAPIWrapper(
             serper_api_key=os.getenv("SERPER_API_KEY"), type="images"
         )
         recommendations = []
-        current_weekday = get_current_weekday()
 
-        # Filter the meal plan to only include the current weekday
+        # Filter the meal plan to only include the target weekday
         current_day_meals = [
-            day for day in latest_meal_plan if day["weekday"] == current_weekday
+            day for day in latest_meal_plan if day["weekday"] == target_weekday
         ]
 
         for day in current_day_meals:
@@ -442,6 +441,7 @@ async def update_profile(data: Dict[str, Any], user=Depends(get_current_user)):
 @app.post("/mealplans/generate/recommendations")
 @log_execution_time_async
 async def generate_mealplan_recommendations_endpoint(
+    weekday: Optional[int] = None,
     user=Depends(get_current_user),
 ):
     try:
@@ -457,10 +457,12 @@ async def generate_mealplan_recommendations_endpoint(
             "results", []
         )  # Access the data field which contains the meal plan structure
 
+        target_weekday = weekday if weekday is not None else get_current_weekday()
+
         # Create an async generator that will both stream the response and save the recommendations
         async def generate_and_save():
             full_recommendations = None
-            async for chunk in stream_recommendations(latest_meal_plan):
+            async for chunk in stream_recommendations(latest_meal_plan, target_weekday):
                 # Parse the chunk to get the recommendations data
                 chunk_data = json.loads(chunk.replace("data: ", ""))
 
@@ -782,11 +784,11 @@ async def get_latest_mealplan_pdf(user=Depends(get_current_user)):
 
 @app.get("/mealplans/{meal_plan_id}/recommendations")
 async def get_meal_plan_recommendations(
-    meal_plan_id: str, user=Depends(get_current_user)
+    meal_plan_id: str, weekday: Optional[int] = None, user=Depends(get_current_user)
 ):
-    """Get recommendations for a specific meal plan for the current weekday"""
-    current_weekday = get_current_weekday()
-    recommendations = supabase.get_recommendations(meal_plan_id, current_weekday)
+    """Get recommendations for a specific meal plan for the specified weekday (defaults to current weekday)"""
+    target_weekday = weekday if weekday is not None else get_current_weekday()
+    recommendations = supabase.get_recommendations(meal_plan_id, target_weekday)
     if not recommendations:
         raise HTTPException(
             status_code=404, detail="No recommendations found for this meal plan"
