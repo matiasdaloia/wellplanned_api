@@ -266,21 +266,27 @@ class SupabaseClient:
         )
         return response.data
 
-    def get_recommendations(self, meal_plan_id: str) -> List[Dict[str, Any]]:
+    def get_recommendations(
+        self, meal_plan_id: str, weekday: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         """
         Get recommendations for a specific meal plan
         Args:
             meal_plan_id: The ID of the meal plan
+            weekday: Optional weekday to filter recommendations (0 for Monday, 6 for Sunday)
         Returns:
             List of recommendations for the meal plan
         """
-        response = (
+        query = (
             self.client.table("recommendations")
             .select("*")
             .eq("meal_plan_id", meal_plan_id)
-            .order("created_at", desc=True)
-            .execute()
         )
+
+        if weekday is not None:
+            query = query.eq("weekday", weekday)
+
+        response = query.order("created_at", desc=True).execute()
         return response.data
 
 

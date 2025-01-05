@@ -293,14 +293,25 @@ async def generate_mealplan_from_pdf(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def get_current_weekday() -> int:
+    """Get the current weekday (0 for Monday, 6 for Sunday)"""
+    return datetime.now().weekday()
+
+
 async def stream_recommendations(latest_meal_plan: Dict[str, Any]):
     try:
         google_search = GoogleSerperAPIWrapper(
             serper_api_key=os.getenv("SERPER_API_KEY"), type="images"
         )
         recommendations = []
+        current_weekday = get_current_weekday()
 
-        for day in latest_meal_plan:
+        # Filter the meal plan to only include the current weekday
+        current_day_meals = [
+            day for day in latest_meal_plan if day["weekday"] == current_weekday
+        ]
+
+        for day in current_day_meals:
             for meal in day["meals"]:
                 search_result = await google_search.aresults(meal["recipeQuery"])
 
@@ -773,8 +784,9 @@ async def get_latest_mealplan_pdf(user=Depends(get_current_user)):
 async def get_meal_plan_recommendations(
     meal_plan_id: str, user=Depends(get_current_user)
 ):
-    """Get recommendations for a specific meal plan"""
-    recommendations = supabase.get_recommendations(meal_plan_id)
+    """Get recommendations for a specific meal plan for the current weekday"""
+    current_weekday = get_current_weekday()
+    recommendations = supabase.get_recommendations(meal_plan_id, current_weekday)
     if not recommendations:
         raise HTTPException(
             status_code=404, detail="No recommendations found for this meal plan"
