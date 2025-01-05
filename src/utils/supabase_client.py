@@ -289,6 +289,49 @@ class SupabaseClient:
         response = query.order("created_at", desc=True).execute()
         return response.data
 
+    async def update_recipe_breakdown(
+        self, recommendation_id: str, breakdown: Dict[str, Any], status: str
+    ) -> Dict[str, Any]:
+        """
+        Update recipe breakdown for a recommendation
+        Args:
+            recommendation_id: The ID of the recommendation
+            breakdown: The recipe breakdown data
+            status: The status of the breakdown generation (pending, completed, failed)
+        Returns:
+            The updated recommendation
+        """
+        data = {
+            "recipe_breakdown_content": breakdown,
+            "recipe_breakdown_status": status,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        response = (
+            self.client.table("recommendations")
+            .update(data)
+            .eq("id", recommendation_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def get_recommendation(
+        self, recommendation_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get a recommendation by ID
+        Args:
+            recommendation_id: The ID of the recommendation
+        Returns:
+            The recommendation data or None if not found
+        """
+        response = (
+            self.client.table("recommendations")
+            .select("*")
+            .eq("id", recommendation_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
 
 # Create a singleton instance
 supabase = SupabaseClient()

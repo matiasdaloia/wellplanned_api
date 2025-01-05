@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_community.document_loaders import SeleniumURLLoader
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_core.pydantic_v1 import BaseModel as LangchainPydanticBaseModel
 from langchain_core.pydantic_v1 import Field
@@ -335,28 +335,6 @@ async def stream_recommendations(latest_meal_plan: Dict[str, Any], target_weekda
     except Exception as e:
         logger.error("Error streaming recommendations", exc_info=True)
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-
-
-# Auth endpoints
-@app.post("/auth/signup")
-async def signup(request: SignUpRequest):
-    """Sign up a new user"""
-    return await supabase.sign_up(
-        request.email, request.password, request.first_name, request.last_name
-    )
-
-
-@app.post("/auth/signin")
-async def signin(request: SignInRequest):
-    """Sign in a user"""
-    return await supabase.sign_in(request.email, request.password)
-
-
-@app.post("/auth/signout")
-async def signout(user=Depends(get_current_user)):
-    """Sign out the current user"""
-    await supabase.sign_out()
-    return {"message": "Successfully signed out"}
 
 
 @app.get("/profile")
@@ -794,3 +772,145 @@ async def get_meal_plan_recommendations(
             status_code=404, detail="No recommendations found for this meal plan"
         )
     return recommendations
+
+
+async def stream_recipe_breakdown(url: str, language: str = "en"):
+    """Stream recipe breakdown generation"""
+    try:
+        # Initialize the loader with a longer timeout and retry mechanism
+        loader = SeleniumURLLoader(
+            urls=[url],
+        )
+
+        # Add error handling for the loading process
+        try:
+            data = loader.load()
+            if not data:
+                raise ValueError("Failed to load recipe content")
+        except Exception as e:
+            logger.error(f"Error loading recipe URL: {str(e)}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Failed to load recipe content. Please try again later.'})}\n\n"
+            return
+
+        # Use Gemini for better recipe parsing
+        llm = ChatOpenAI(
+            temperature=0.3,
+            model="gpt-4o-mini",
+            stream=True,
+        )
+
+        prompt = PromptTemplate.from_template(
+            """
+            Analyze the recipe and provide a beautifully formatted breakdown in markdown format.
+            Answer must be written in: {language}
+
+            Include the following sections with appropriate markdown headers:
+            - Recipe Title
+            - Author (if available)
+            - Description
+            - Difficulty Level
+            - Preparation Time
+            - Cooking Time
+            - Total Time
+            - Servings
+            - Ingredients (as a list)
+            - Instructions (as numbered steps)
+            - Tips and Notes (if any)
+            - Nutritional Information (if available)
+
+            Make it visually appealing with proper markdown formatting, emojis, etc using:
+            - Headers (# ## ###)
+            - Lists (- or 1. 2. 3.)
+            - Bold and italic text where appropriate
+            - Horizontal rules for section separation
+
+            If any information is not available, skip that section rather than making up information.
+            For ingredients and steps, ensure they are properly formatted and numbered.
+            
+            Context:
+            {context}
+            """
+        )
+
+        chain = create_stuff_documents_chain(llm, prompt)
+
+        full_response = None
+        async for chunk in chain.astream(
+            {
+                "context": data,
+                "language": language,
+            }
+        ):
+            if full_response is None:
+                full_response = chunk
+            else:
+                full_response = chunk
+
+            yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
+
+        # Send the final complete response
+        yield f"data: {json.dumps({'type': 'complete', 'content': full_response})}\n\n"
+
+    except Exception as e:
+        logger.error("Error generating recipe breakdown", exc_info=True)
+        yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+
+@app.post("/recommendations/{recommendation_id}/breakdown")
+async def generate_recipe_breakdown(
+    recommendation_id: str, user=Depends(get_current_user)
+):
+    """Generate recipe breakdown for a recommendation"""
+    try:
+        # Get recommendation
+        recommendation = await supabase.get_recommendation(recommendation_id)
+        if not recommendation:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+
+        # Create async generator that will both stream the response and save the breakdown
+        async def generate_and_save():
+            full_response = None
+            async for chunk in stream_recipe_breakdown(recommendation["recipe_link"]):
+                # Parse the chunk to get the breakdown data
+                chunk_data = json.loads(chunk.replace("data: ", ""))
+
+                # If this is the complete response, save the breakdown
+                if chunk_data["type"] == "complete":
+                    full_response = chunk_data["content"]
+                    # Save the breakdown in the background
+                    asyncio.create_task(
+                        supabase.update_recipe_breakdown(
+                            recommendation_id, full_response, "completed"
+                        )
+                    )
+                elif chunk_data["type"] == "error":
+                    # Update status to failed if there's an error
+                    asyncio.create_task(
+                        supabase.update_recipe_breakdown(
+                            recommendation_id, None, "failed"
+                        )
+                    )
+
+                yield chunk
+
+        return StreamingResponse(
+            generate_and_save(),
+            media_type="text/event-stream",
+        )
+
+    except Exception as e:
+        logger.error("Error generating recipe breakdown", exc_info=True)
+        # Update status to failed
+        await supabase.update_recipe_breakdown(recommendation_id, None, "failed")
+        raise HTTPException(
+            status_code=500, detail=f"Error generating recipe breakdown: {str(e)}"
+        )
+
+
+@app.get("/recommendations/{recommendation_id}")
+async def get_recommendation(recommendation_id: str, user=Depends(get_current_user)):
+    """Get a recommendation by ID including its recipe breakdown"""
+    recommendation = await supabase.get_recommendation(recommendation_id)
+    if not recommendation:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    return recommendation
