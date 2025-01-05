@@ -266,7 +266,7 @@ class SupabaseClient:
         )
         return response.data
 
-    async def get_recommendations(self, meal_plan_id: str) -> List[Dict[str, Any]]:
+    def get_recommendations(self, meal_plan_id: str) -> List[Dict[str, Any]]:
         """
         Get recommendations for a specific meal plan
         Args:

@@ -1,15 +1,13 @@
 import asyncio
 import json
+import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.callbacks import get_openai_callback
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -20,21 +18,28 @@ from langchain_core.pydantic_v1 import Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel as PydanticBaseModel
-from typing_extensions import Annotated, TypedDict
 
-from src.utils.execution_timer import ExecutionTimer
+from src.utils.logger import get_logger, log_execution_time_async
+from src.utils.middleware import setup_middleware
 from src.utils.pdf_utils import pdf_to_base64_images
 from src.utils.supabase_client import supabase
 
 load_dotenv()
 
+# Initialize logger
+logger = get_logger()
 
+# Initialize FastAPI app
 app = FastAPI()
 
+# Set up middleware
+setup_middleware(app)
 
 security = HTTPBearer()
 
 
+# Replace print statements with logger calls
+@log_execution_time_async
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> Dict[str, Any]:
@@ -46,6 +51,7 @@ async def get_current_user(
         # Get user from JWT token
         user = supabase.get_user_by_jwt(credentials.credentials)
         if not user:
+            logger.warning("Invalid or expired token")
             raise HTTPException(
                 status_code=401,
                 detail="Invalid or expired token",
@@ -55,6 +61,7 @@ async def get_current_user(
         # Get user's profile
         profile = supabase.get_profile(user.user.id)
         if not profile:
+            logger.warning(f"Profile not found for user {user.user.id}")
             raise HTTPException(
                 status_code=404,
                 detail="User profile not found",
@@ -67,18 +74,12 @@ async def get_current_user(
             "last_name": profile["last_name"],
         }
     except Exception as e:
+        logger.error("Authentication error", exc_info=True)
         raise HTTPException(
             status_code=401,
             detail=str(e),
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-
-llm = ChatGoogleGenerativeAI(
-    temperature=0,
-    max_retries=2,
-    model="gemini-2.0-flash-exp",
-)
 
 
 class Meal(TypedDict):
@@ -177,64 +178,65 @@ class SignInRequest(PydanticBaseModel):
     password: str
 
 
-def get_recipe_breakdown_docs(url):
-    loader = WebBaseLoader(url)
-    # loader = AsyncChromiumLoader(url)
-    document = loader.load()
+@log_execution_time_async
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> Dict[str, Any]:
+    """
+    Validate JWT token from Authorization header and return user
+    The token should be the session token from Supabase client's auth.getSession()
+    """
+    try:
+        # Get user from JWT token
+        user = supabase.get_user_by_jwt(credentials.credentials)
+        if not user:
+            logger.warning("Invalid or expired token")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or expired token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
-    text_splitter = RecursiveCharacterTextSplitter()
-    documents = text_splitter.split_documents(document)
+        # Get user's profile
+        profile = supabase.get_profile(user.user.id)
+        if not profile:
+            logger.warning(f"Profile not found for user {user.user.id}")
+            raise HTTPException(
+                status_code=404,
+                detail="User profile not found",
+            )
 
-    return documents
-
-
-@ExecutionTimer.time_this
-def get_mealplan_docs(url: str):
-    loader = PyPDFLoader(url)
-    document = loader.load()
-
-    text_splitter = RecursiveCharacterTextSplitter()
-    documents = text_splitter.split_documents(document)
-
-    return documents
-
-
-def get_recipe_breakdown(request_body: GenerateRecipeBreakdownRequest):
-    documents = get_recipe_breakdown_docs(request_body.recipe_url)
-    parser = JsonOutputParser(pydantic_object=RecipeBreakdown)
-    prompt = PromptTemplate.from_template(
-        """
-            Summarize the recipe with the following information:
-            Answer must be written in: {language}
-
-            format_instructions: {format_instructions}
-
-            {context}
-        """
-    )
-    chain = create_stuff_documents_chain(
-        llm,
-        prompt,
-        output_parser=parser,
-    )
-    with get_openai_callback() as cb:
-        response = chain.invoke(
-            {
-                "context": documents,
-                "language": request_body.language,
-                "format_instructions": parser.get_format_instructions(),
-            }
+        return {
+            "id": profile["id"],
+            "email": user.user.email,
+            "first_name": profile["first_name"],
+            "last_name": profile["last_name"],
+        }
+    except Exception as e:
+        logger.error("Authentication error", exc_info=True)
+        raise HTTPException(
+            status_code=401,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
         )
-        print(cb)
-
-    return response
 
 
-@ExecutionTimer.time_this
+@log_execution_time_async
 async def generate_mealplan_from_pdf(
     file_content: bytes, language: str, preferences: Optional[DietaryPreferences] = None
 ) -> List[MealPlanResult]:
     try:
+        logger.info(
+            "Starting meal plan generation",
+            extra={
+                "extra_data": {
+                    "language": language,
+                    "preferences": preferences.dict() if preferences else None,
+                    "content_size": len(file_content),
+                }
+            },
+        )
+
         base64_images = pdf_to_base64_images(file_content)
         llm = ChatOpenAI(
             temperature=0,
@@ -278,89 +280,50 @@ async def generate_mealplan_from_pdf(
         full = None
 
         async for chunk in structured_llm.astream(messages):
-            print(chunk, flush=True)
+            logger.debug(
+                "Received chunk from LLM", extra={"extra_data": {"chunk": str(chunk)}}
+            )
             full = chunk
 
+        logger.info("Completed meal plan generation")
         return full
 
     except Exception as e:
-        print(e)
+        logger.error("Error generating meal plan", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-def generate_mealplan_recommendations(
-    request_body: GenerateMealPlanRecommendationsRequest,
-):
-    now = datetime.now()
-    current_weekday = now.weekday()
-
-    # Search
-    google_search = GoogleSerperAPIWrapper()
-
-    current_day_mealplan_list = [
-        {
-            "weekday": mealplan.weekday,
-            "meals": [
-                {"slot": meal.slot, "meal": meal.meal, "ingredients": meal.ingredients}
-                for meal in mealplan.meals
-            ],
-        }
-        for mealplan in filter(
-            lambda meal: meal.weekday == current_weekday, request_body.meal_plan
-        )
-    ]
-
-    google_search = GoogleSerperAPIWrapper(type="images")
-
-    recommendations = []
-
-    for mealplan in current_day_mealplan_list:
-        for meal in mealplan["meals"]:
-            search_result = google_search.results(f"{meal['meal']} recipe")
-            top_3_results = search_result["images"][:3]
-
-            for result in top_3_results:
-                recommendation = {
-                    "recipe_title": result["title"],
-                    "recipe_link": result["link"],
-                    "recipe_thumbnail": result["imageUrl"],
-                    "weekday": mealplan["weekday"],
-                    "slot": meal["slot"],
-                }
-                recommendations.append(recommendation)
-
-    return recommendations
 
 
 async def stream_recommendations(latest_meal_plan: Dict[str, Any]):
     try:
-        google_search = GoogleSerperAPIWrapper(type="images")
+        google_search = GoogleSerperAPIWrapper(
+            serper_api_key=os.getenv("SERPER_API_KEY"), type="images"
+        )
         recommendations = []
 
-        for meal in latest_meal_plan["meals"]:
-            # Use the existing recipeQuery for searching recipes
-            search_result = google_search.results(meal["recipeQuery"])
-            top_3_results = search_result["images"][:3]
+        for day in latest_meal_plan:
+            for meal in day["meals"]:
+                search_result = await google_search.aresults(meal["recipeQuery"])
 
-            meal_recommendations = []
-            for result in top_3_results:
-                recommendation = {
-                    "recipe_title": result["title"],
-                    "recipe_link": result["link"],
-                    "recipe_thumbnail": result["imageUrl"],
-                    "weekday": meal["weekday"],
-                    "slot": meal["slot"],
-                }
-                meal_recommendations.append(recommendation)
-                recommendations.append(recommendation)
+                top_3_results = search_result["images"][:3]
 
-            # Stream each meal's recommendations as they are generated
-            yield f"data: {json.dumps({'type': 'update', 'content': meal_recommendations})}\n\n"
+                meal_recommendations = []
+                for result in top_3_results:
+                    recommendation = {
+                        "recipe_title": result["title"],
+                        "recipe_link": result["link"],
+                        "recipe_thumbnail": result["imageUrl"],
+                        "weekday": day["weekday"],
+                        "slot": meal["slot"],
+                    }
+                    meal_recommendations.append(recommendation)
+                    recommendations.append(recommendation)
 
-        # Send the final complete response with all recommendations
+                yield f"data: {json.dumps({'type': 'update', 'content': meal_recommendations})}\n\n"
+
         yield f"data: {json.dumps({'type': 'complete', 'content': recommendations})}\n\n"
 
     except Exception as e:
+        logger.error("Error streaming recommendations", exc_info=True)
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
 
@@ -465,27 +428,23 @@ async def update_profile(data: Dict[str, Any], user=Depends(get_current_user)):
     return supabase.update_profile(user["id"], updated_profile)
 
 
-@app.post("/recipes/breakdown")
-async def get_breakdown(
-    request_body: GenerateRecipeBreakdownRequest, user=Depends(get_current_user)
-):
-    recipe_breakdown = get_recipe_breakdown(request_body)
-    return recipe_breakdown
-
-
 @app.post("/mealplans/generate/recommendations")
+@log_execution_time_async
 async def generate_mealplan_recommendations_endpoint(
     user=Depends(get_current_user),
 ):
     try:
         # Fetch the latest meal plan for the user
-        meal_plans = supabase.list_meal_plans(user["id"])
+        meal_plans = supabase.list_meal_plans()
         if not meal_plans:
             raise HTTPException(
                 status_code=404, detail="No meal plans found for the user."
             )
 
-        latest_meal_plan = meal_plans[0]  # Assuming the latest is the last in the list
+        meal_plan = meal_plans[0]  # Get the full meal plan object
+        latest_meal_plan = meal_plan.get("data", {}).get(
+            "results", []
+        )  # Access the data field which contains the meal plan structure
 
         # Create an async generator that will both stream the response and save the recommendations
         async def generate_and_save():
@@ -500,7 +459,7 @@ async def generate_mealplan_recommendations_endpoint(
                     # Save the recommendations in the background
                     asyncio.create_task(
                         supabase.save_recommendations(
-                            user["id"], latest_meal_plan["id"], full_recommendations
+                            user["id"], meal_plan["id"], full_recommendations
                         )
                     )
 
@@ -512,12 +471,13 @@ async def generate_mealplan_recommendations_endpoint(
         )
 
     except Exception as e:
-        print(f"Error generating meal plan recommendations: {e}")
+        logger.error("Error generating meal plan recommendations", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error generating recommendations: {str(e)}"
         )
 
 
+@log_execution_time_async
 async def stream_mealplan(file_content: bytes):
     try:
         base64_images = pdf_to_base64_images(file_content)
@@ -576,20 +536,27 @@ async def stream_mealplan(file_content: bytes):
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
 
+@log_execution_time_async
 async def save_generated_meal_plan(
     user_id: str, pdf_url: str, meal_plan_data: Dict[str, Any]
 ):
     """Save the generated meal plan to the database"""
     try:
-        # Create meal plan
+        logger.info(
+            "Saving meal plan",
+            extra={"extra_data": {"user_id": user_id, "pdf_url": pdf_url}},
+        )
+
         meal_plan_request = {
             "pdf_url": pdf_url,
             "data": meal_plan_data,
         }
 
         supabase.create_meal_plan(user_id, meal_plan_request)
+        logger.info("Successfully saved meal plan")
+
     except Exception as e:
-        print(f"Error saving meal plan: {e}")
+        logger.error("Error saving meal plan", exc_info=True)
         # Don't raise the exception - we want to continue returning the streaming response
         # but log the error for debugging
 
@@ -706,16 +673,6 @@ async def delete_meal_plan(meal_plan_id: str, user=Depends(get_current_user)):
     return {"message": "Meal plan deleted"}
 
 
-# Recipes CRUD endpoints
-@app.post("/recipes")
-async def create_recipe(
-    recipe: GenerateRecipeBreakdownRequest, user=Depends(get_current_user)
-):
-    """Create a new recipe"""
-    recipe_data = get_recipe_breakdown(recipe)
-    return await supabase.create_recipe(user["id"], recipe_data)
-
-
 @app.get("/recipes/{recipe_id}")
 async def get_recipe(recipe_id: str, user=Depends(get_current_user)):
     """Get a recipe by ID"""
@@ -729,17 +686,6 @@ async def get_recipe(recipe_id: str, user=Depends(get_current_user)):
 async def list_recipes(user=Depends(get_current_user)):
     """List all recipes"""
     return await supabase.list_recipes()
-
-
-@app.put("/recipes/{recipe_id}")
-async def update_recipe(
-    recipe_id: str,
-    recipe: GenerateRecipeBreakdownRequest,
-    user=Depends(get_current_user),
-):
-    """Update a recipe"""
-    recipe_data = get_recipe_breakdown(recipe)
-    return await supabase.update_recipe(recipe_id, recipe_data)
 
 
 @app.delete("/recipes/{recipe_id}")
@@ -828,7 +774,7 @@ async def get_meal_plan_recommendations(
     meal_plan_id: str, user=Depends(get_current_user)
 ):
     """Get recommendations for a specific meal plan"""
-    recommendations = await supabase.get_recommendations(meal_plan_id)
+    recommendations = supabase.get_recommendations(meal_plan_id)
     if not recommendations:
         raise HTTPException(
             status_code=404, detail="No recommendations found for this meal plan"
