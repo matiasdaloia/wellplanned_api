@@ -106,18 +106,17 @@ class MealPlan(TypedDict):
 
 
 class MealPlanResult(TypedDict):
-    results: Annotated[list[MealPlan], ..., "The generated meal plan"]
+    results: Annotated[List[MealPlan], ..., "The generated meal plan"]
 
 
-class RecipeBreakdown(LangchainPydanticBaseModel):
-    thumbnail: str = Field(description="The thumbnail image of the recipe")
-    title: str = Field(description="The title of the recipe")
-    author: str = Field(description="The author of the recipe")
-    difficulty: str = Field(description="The difficulty level of the recipe")
-    time: str = Field(description="The time it takes to prepare the recipe")
-    servings: str = Field(description="The number of servings the recipe makes")
-    ingredients: list[str] = Field(description="The ingredients needed for the recipe")
-    steps: list[str] = Field(description="The steps to prepare the recipe")
+class RecipeBreakdown(TypedDict):
+    title: Annotated[str, "The title of the recipe"]
+    author: Annotated[str, "The author of the recipe"]
+    difficulty: Annotated[str, "The difficulty level of the recipe"]
+    time: Annotated[str, "The time it takes to prepare the recipe"]
+    servings: Annotated[str, "The number of servings the recipe makes"]
+    ingredients: Annotated[List[str], "The ingredients needed for the recipe"]
+    steps: Annotated[List[str], "The steps to prepare the recipe"]
 
 
 class GenerateMealPlanRequest(PydanticBaseModel):
@@ -775,7 +774,7 @@ async def get_meal_plan_recommendations(
 
 
 async def stream_recipe_breakdown(url: str, language: str = "en"):
-    """Stream recipe breakdown generation"""
+    """Stream recipe breakdown generation in structured format"""
     try:
         # Initialize the loader with a longer timeout and retry mechanism
         loader = SeleniumURLLoader(
@@ -792,64 +791,53 @@ async def stream_recipe_breakdown(url: str, language: str = "en"):
             yield f"data: {json.dumps({'type': 'error', 'content': 'Failed to load recipe content. Please try again later.'})}\n\n"
             return
 
-        # Use Gemini for better recipe parsing
+        # Use OpenAI for structured recipe parsing
         llm = ChatOpenAI(
             temperature=0.3,
             model="gpt-4o-mini",
             stream=True,
         )
+        structured_llm = llm.with_structured_output(RecipeBreakdown)
 
         prompt = PromptTemplate.from_template(
             """
-            Analyze the recipe and provide a beautifully formatted breakdown in markdown format.
-            Answer must be written in: {language}
+            Analyze the recipe webpage content and extract the recipe information in a structured format.
+            Answer must be in: {language}
 
-            Include the following sections with appropriate markdown headers:
-            - Recipe Title
-            - Author (if available)
-            - Description
-            - Difficulty Level
-            - Preparation Time
-            - Cooking Time
-            - Total Time
-            - Servings
-            - Ingredients (as a list)
-            - Instructions (as numbered steps)
-            - Tips and Notes (if any)
-            - Nutritional Information (if available)
+            Extract the following information:
+            - Recipe title
+            - Author or website name
+            - Difficulty level (Easy/Medium/Hard)
+            - Total time (including prep and cooking)
+            - Number of servings/portions
+            - List of ingredients with quantities
+            - List of preparation steps
 
-            Make it visually appealing with proper markdown formatting, emojis, etc using:
-            - Headers (# ## ###)
-            - Lists (- or 1. 2. 3.)
-            - Bold and italic text where appropriate
-            - Horizontal rules for section separation
-
-            If any information is not available, skip that section rather than making up information.
-            For ingredients and steps, ensure they are properly formatted and numbered.
+            Only include factual information from the webpage. If a field is not available, use a sensible default or omit it.
+            Do not make up or infer missing information.
             
             Context:
             {context}
             """
         )
 
-        chain = create_stuff_documents_chain(llm, prompt)
+        chain = create_stuff_documents_chain(structured_llm, prompt)
 
-        full_response = None
+        # Initialize an empty dictionary to accumulate chunks
+        accumulated_data = {}
         async for chunk in chain.astream(
             {
                 "context": data,
                 "language": language,
             }
         ):
-            if full_response is None:
-                full_response = chunk
-            else:
-                full_response = chunk
-
+            # Accumulate the chunks
+            if isinstance(chunk, dict):
+                accumulated_data.update(chunk)
             yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
 
-        # Send the final complete response
-        yield f"data: {json.dumps({'type': 'complete', 'content': full_response})}\n\n"
+        # Send the final complete response with the structured data
+        yield f"data: {json.dumps({'type': 'complete', 'content': accumulated_data})}\n\n"
 
     except Exception as e:
         logger.error("Error generating recipe breakdown", exc_info=True)
@@ -874,13 +862,13 @@ async def generate_recipe_breakdown(
                 # Parse the chunk to get the breakdown data
                 chunk_data = json.loads(chunk.replace("data: ", ""))
 
-                # If this is the complete response, save the breakdown
+                # If this is the complete response, save the markdown breakdown
                 if chunk_data["type"] == "complete":
-                    full_response = chunk_data["content"]
-                    # Save the breakdown in the background
+                    structured_data = chunk_data["content"]
+                    # Save the structured breakdown in the background
                     asyncio.create_task(
                         supabase.update_recipe_breakdown(
-                            recommendation_id, full_response, "completed"
+                            recommendation_id, structured_data, "completed"
                         )
                     )
                 elif chunk_data["type"] == "error":
