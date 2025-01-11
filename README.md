@@ -286,3 +286,7 @@ The `meal_slot` in meal plan recipes represents:
 - 2: Lunch
 - 3: Afternoon Snack
 - 4: Dinner
+
+## License
+
+This project is licensed under the terms of the GNU Affero General Public License v3.0. See the [LICENSE](LICENSE) file for details.
