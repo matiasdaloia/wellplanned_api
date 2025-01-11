@@ -140,152 +140,41 @@ Authorization: Bearer your-jwt-token
 
 All meal plan endpoints require authentication with a JWT token in the Authorization header.
 
-#### Create Meal Plan
+#### Generate Meal Plan Overview
 ```http
-POST /mealplans
-{
-    "weekday": 0,
-    "meals": [
-        {
-            "slot": 0,
-            "meal": "Oatmeal with fruits",
-            "ingredients": ["oats", "banana", "berries"],
-            "recipe": {
-                "title": "Healthy Breakfast Bowl",
-                "ingredients": [
-                    "1 cup rolled oats",
-                    "1 banana, sliced",
-                    "1/2 cup mixed berries"
-                ],
-                "steps": [
-                    "Cook oats according to package instructions",
-                    "Top with sliced banana and berries"
-                ]
-            }
-        }
-    ],
-    "pdf_url": "optional-pdf-url",
-    "data": {
-        "additional": "metadata"
-    }
-}
+POST /mealplans/generate/overview
+Authorization: Bearer your-jwt-token
 ```
 
-#### Get Meal Plan
+#### Generate Meal Plan Recommendations
 ```http
-GET /mealplans/{meal_plan_id}
+POST /mealplans/generate/recommendations
+Authorization: Bearer your-jwt-token
 ```
 
-#### Get Meal Plan with Recipes
+#### Check if Meal Plan Exists
 ```http
-GET /mealplans/{meal_plan_id}/with-recipes
-```
-
-#### List Meal Plans
-```http
-GET /mealplans
-```
-
-#### Update Meal Plan
-```http
-PUT /mealplans/{meal_plan_id}
-{
-    "weekday": 0,
-    "meals": [...]
-}
-```
-
-#### Delete Meal Plan
-```http
-DELETE /mealplans/{meal_plan_id}
+GET /mealplans/exists
+Authorization: Bearer your-jwt-token
 ```
 
 ### Recipes
 
 All recipe endpoints require authentication with a JWT token in the Authorization header. Recipes are always associated with a specific meal in a meal plan.
 
-#### Create Recipe
+#### Generate Recipe Breakdown
 ```http
-POST /recipes
-{
-    "recipe_url": "https://example.com/recipe",
-    "language": "en"
-}
+POST /recommendations/{recommendation_id}/breakdown
+Authorization: Bearer your-jwt-token
 ```
 
-Note: Recipes are typically created automatically when creating a meal plan with recipe information. This endpoint is mainly used for creating standalone recipes.
+## Contributing
 
-#### Get Recipe
-```http
-GET /recipes/{recipe_id}
-```
+We welcome contributions from the community! Please read our [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines on how to contribute to this project.
 
-#### List Recipes
-```http
-GET /recipes
-```
+## Changelog
 
-#### Update Recipe
-```http
-PUT /recipes/{recipe_id}
-{
-    "recipe_url": "https://example.com/recipe",
-    "language": "en"
-}
-```
-
-#### Delete Recipe
-```http
-DELETE /recipes/{recipe_id}
-```
-
-## Database Schema
-
-### Profiles
-- `id`: UUID (references auth.users)
-- `first_name`: Text
-- `last_name`: Text
-- `updated_at`: Timestamp
-
-### Meal Plans
-- `id`: UUID
-- `profile_id`: UUID (references profiles)
-- `pdf_url`: Text
-- `data`: JSONB
-- `created_at`: Timestamp
-- `updated_at`: Timestamp
-
-### Meal Plan Recipes
-- `id`: UUID
-- `meal_plan_id`: UUID (references meal_plans)
-- `weekday`: Integer (0-6)
-- `meal_slot`: Integer (0-4)
-- `created_at`: Timestamp
-- `updated_at`: Timestamp
-
-### Recipes
-- `id`: UUID
-- `meal_plan_recipe_id`: UUID (references meal_plan_recipes)
-- `profile_id`: UUID (references profiles)
-- `title`: Text
-- `thumbnail`: Text
-- `author`: Text
-- `difficulty`: Text
-- `time`: Text
-- `servings`: Text
-- `ingredients`: JSONB
-- `steps`: JSONB
-- `created_at`: Timestamp
-- `updated_at`: Timestamp
-
-## Meal Slots
-
-The `meal_slot` in meal plan recipes represents:
-- 0: Breakfast
-- 1: Mid Morning Snack
-- 2: Lunch
-- 3: Afternoon Snack
-- 4: Dinner
+All notable changes to this project will be documented in the [CHANGELOG.md](CHANGELOG.md) file.
 
 ## License
 
