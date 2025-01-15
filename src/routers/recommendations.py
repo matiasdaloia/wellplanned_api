@@ -214,6 +214,7 @@ async def generate_mealplan_recommendations(
         # Create an async generator that will both stream the response and save the recommendations
         async def generate_and_save():
             full_recommendations = None
+            saved_recommendations = []
             async for chunk in stream_recommendations(latest_meal_plan, target_weekday):
                 # Parse the chunk to get the recommendations data
                 chunk_data = json.loads(chunk.replace("data: ", ""))
@@ -221,12 +222,13 @@ async def generate_mealplan_recommendations(
                 # If this is the complete response, save the recommendations
                 if chunk_data["type"] == "complete":
                     full_recommendations = chunk_data["content"]
-                    # Save the recommendations in the background
-                    asyncio.create_task(
-                        supabase.save_recommendations(
-                            user["id"], meal_plan["id"], full_recommendations
-                        )
+                    # Save the recommendations and get their IDs
+                    saved_recommendations = await supabase.save_recommendations(
+                        user["id"], meal_plan["id"], full_recommendations
                     )
+                    # Update the response to include the saved recommendation IDs
+                    chunk_data["content"] = saved_recommendations
+                    chunk = f"data: {json.dumps(chunk_data)}\n\n"
 
                 yield chunk
 
