@@ -323,3 +323,17 @@ async def get_latest_mealplan_pdf(user=Depends(get_current_user)):
         raise HTTPException(
             status_code=500, detail=f"Error retrieving latest PDF: {str(e)}"
         )
+
+
+@router.get("/{meal_plan_id}/recommendations")
+async def get_meal_plan_recommendations(
+    meal_plan_id: str, weekday: Optional[int] = None, user=Depends(get_current_user)
+):
+    """Get recommendations for a specific meal plan for the specified weekday (defaults to current weekday)"""
+    target_weekday = weekday if weekday is not None else get_current_weekday()
+    recommendations = supabase.get_recommendations(meal_plan_id, target_weekday)
+    if not recommendations:
+        raise HTTPException(
+            status_code=404, detail="No recommendations found for this meal plan"
+        )
+    return recommendations

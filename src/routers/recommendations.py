@@ -188,3 +188,69 @@ async def get_recommendation(recommendation_id: str, user=Depends(get_current_us
     if not recommendation:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     return recommendation
+
+
+@router.post("/generate")
+@log_execution_time_async
+async def generate_mealplan_recommendations(
+    weekday: Optional[int] = None,
+    user=Depends(get_current_user),
+):
+    try:
+        # Fetch the latest meal plan for the user
+        meal_plans = supabase.list_meal_plans()
+        if not meal_plans:
+            raise HTTPException(
+                status_code=404, detail="No meal plans found for the user."
+            )
+
+        meal_plan = meal_plans[0]  # Get the full meal plan object
+        latest_meal_plan = meal_plan.get("data", {}).get(
+            "results", []
+        )  # Access the data field which contains the meal plan structure
+
+        target_weekday = weekday if weekday is not None else get_current_weekday()
+
+        # Create an async generator that will both stream the response and save the recommendations
+        async def generate_and_save():
+            full_recommendations = None
+            async for chunk in stream_recommendations(latest_meal_plan, target_weekday):
+                # Parse the chunk to get the recommendations data
+                chunk_data = json.loads(chunk.replace("data: ", ""))
+
+                # If this is the complete response, save the recommendations
+                if chunk_data["type"] == "complete":
+                    full_recommendations = chunk_data["content"]
+                    # Save the recommendations in the background
+                    asyncio.create_task(
+                        supabase.save_recommendations(
+                            user["id"], meal_plan["id"], full_recommendations
+                        )
+                    )
+
+                yield chunk
+
+        return StreamingResponse(
+            generate_and_save(),
+            media_type="text/event-stream",
+        )
+
+    except Exception as e:
+        logger.error("Error generating meal plan recommendations", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error generating recommendations: {str(e)}"
+        )
+
+
+@router.get("/meal-plan/{meal_plan_id}")
+async def get_meal_plan_recommendations(
+    meal_plan_id: str, weekday: Optional[int] = None, user=Depends(get_current_user)
+):
+    """Get recommendations for a specific meal plan for the specified weekday (defaults to current weekday)"""
+    target_weekday = weekday if weekday is not None else get_current_weekday()
+    recommendations = supabase.get_recommendations(meal_plan_id, target_weekday)
+    if not recommendations:
+        raise HTTPException(
+            status_code=404, detail="No recommendations found for this meal plan"
+        )
+    return recommendations
